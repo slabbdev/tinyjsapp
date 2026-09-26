@@ -105,7 +105,15 @@ async function curlFetch(url, init = {}) {
   // identity unless the caller asked for something: curl won't decode what we
   // don't tell the server to send, and honest lengths beat saved bytes here
   if (!pairs.some(([k]) => k.toLowerCase() === 'accept-encoding')) pairs.push(['accept-encoding', 'identity']);
-  for (const [k, v] of pairs) args.push('-H', k + ': ' + v);
+  // WHATWG fetch rejects CR/LF (and NUL) in header names and values; curl
+  // doesn't — an -H argument carrying a CRLF goes onto the wire as extra
+  // request lines. Enforce the native path's rule here, so a page-supplied
+  // header can't smuggle request lines through the repair hop.
+  for (const [k, v] of pairs) {
+    if (/[\r\n\0]/.test(String(k)) || /[\r\n\0]/.test(String(v)))
+      throw new TypeError('Invalid header value');
+    args.push('-H', k + ': ' + v);
+  }
   const body = init.body;
   if (body != null) {
     if (typeof body !== 'string' && !(body instanceof Uint8Array))
