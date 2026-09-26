@@ -898,6 +898,15 @@ async function maybeWriteCliShim(cfg, appBundle) {
     console.log(`    link it:  ln -sf "$(pwd)/${shimPath}" /usr/local/bin/${name}`);
 }
 
+// XML-escape a config string for Info.plist interpolation. These values land
+// in the bundle's plist verbatim, and an unescaped & or < makes the plist
+// invalid XML: plutil rejects it, LaunchServices can't resolve the bundle
+// ("executable is missing" from open/Finder), and notarization tooling that
+// parses the plist strictly refuses it.
+const escXml = (s) => String(s ?? '')
+  .replace(/&/g, '&amp;').replace(/</g, '&lt;')
+  .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+
 async function cmdBuild() {
   const cfg = await loadConfig();
   // Same staleness guard `dev` has, and it matters more here: a build SHIPS
@@ -1066,37 +1075,37 @@ async function cmdBuild() {
   // scheme(s) ("urlScheme": "myapp" or [..]) and file associations
   // ("fileExtensions": ["md", ...]) from tinyjs.json.
   let extraKeys = `
-  <key>TinyjsWindowSize</key>    <string>${cfg.size}</string>`;
+  <key>TinyjsWindowSize</key>    <string>${escXml(cfg.size)}</string>`;
   if (cfg.readAccess) {
     // Widen the page's file:// read root (see createApp readAccess). true =
     // the user's home dir; a string = that path.
     const ra = cfg.readAccess === true ? '~' : String(cfg.readAccess);
     extraKeys += `
-  <key>TinyjsReadAccess</key>    <string>${ra}</string>`;
+  <key>TinyjsReadAccess</key>    <string>${escXml(ra)}</string>`;
   }
   if (cfg.userAgent) {
     // Custom User-Agent for the webview (see createApp userAgent). Lets a
     // devUrl-wrapped site see a real browser UA instead of WKWebView's default.
-    const ua = String(cfg.userAgent).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    const ua = escXml(cfg.userAgent);
     extraKeys += `
   <key>TinyjsUserAgent</key>     <string>${ua}</string>`;
   }
   if (cfg.url) {
     // "url": the main window starts at this remote page (site wrappers) —
     // the launcher navigates there instead of Resources/app/frontend.
-    const u = String(cfg.url).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    const u = escXml(cfg.url);
     extraKeys += `
   <key>TinyjsUrl</key>           <string>${u}</string>`;
   }
   if (cfg.downloads) {
     // "downloads": auto | ask | deny (see the launcher's download delegate).
     extraKeys += `
-  <key>TinyjsDownloads</key>     <string>${cfg.downloads}</string>`;
+  <key>TinyjsDownloads</key>     <string>${escXml(cfg.downloads)}</string>`;
   }
   if (cfg.popups) {
     // "popups": external | window | deny (window.open / target=_blank).
     extraKeys += `
-  <key>TinyjsPopups</key>        <string>${cfg.popups}</string>`;
+  <key>TinyjsPopups</key>        <string>${escXml(cfg.popups)}</string>`;
   }
   if (cfg.debug) {
     // Devtools in a packaged .app (see createApp debug): LaunchServices
@@ -1131,16 +1140,16 @@ async function cmdBuild() {
         ? ([...new Set(wc.map((n) => names[String(n).toLowerCase()]).filter(Boolean))].join(',') || 'none')
         : '';
     extraKeys += `
-  <key>TinyjsChrome</key>        <string>${[bit(ch.frame), controls, bit(ch.transparent), vib, bit(ch.squareCorners), bit(ch.acceptsFirstMouse), wcp ? `${wcp.x | 0},${wcp.y | 0}` : ''].join('&#9;')}</string>`;
+  <key>TinyjsChrome</key>        <string>${[bit(ch.frame), controls, bit(ch.transparent), escXml(vib), bit(ch.squareCorners), bit(ch.acceptsFirstMouse), wcp ? `${wcp.x | 0},${wcp.y | 0}` : ''].join('&#9;')}</string>`;
   }
   const schemes = cfg.urlScheme ? [].concat(cfg.urlScheme) : [];
   if (schemes.length) {
     extraKeys += `
   <key>CFBundleURLTypes</key>
   <array><dict>
-    <key>CFBundleURLName</key>    <string>${cfg.id}</string>
+    <key>CFBundleURLName</key>    <string>${escXml(cfg.id)}</string>
     <key>CFBundleURLSchemes</key>
-    <array>${schemes.map((s) => `<string>${s}</string>`).join('')}</array>
+    <array>${schemes.map((s) => `<string>${escXml(s)}</string>`).join('')}</array>
   </dict></array>`;
   }
   // Mic/camera ("permissions": { "microphone": "why", "camera": "why" }):
@@ -1149,9 +1158,9 @@ async function cmdBuild() {
   // entitlement — the strings land here, the entitlements at codesign below.
   const perms = cfg.permissions ?? {};
   if (perms.microphone) extraKeys += `
-  <key>NSMicrophoneUsageDescription</key> <string>${perms.microphone}</string>`;
+  <key>NSMicrophoneUsageDescription</key> <string>${escXml(perms.microphone)}</string>`;
   if (perms.camera) extraKeys += `
-  <key>NSCameraUsageDescription</key>     <string>${perms.camera}</string>`;
+  <key>NSCameraUsageDescription</key>     <string>${escXml(perms.camera)}</string>`;
   // Speech-to-text ("permissions": { "speechRecognition": "why" }). The page's
   // webkitSpeechRecognition needs BOTH this and the microphone string: WebKit
   // asks SFSpeechRecognizer for authorization, and without the key the OS
@@ -1160,7 +1169,7 @@ async function cmdBuild() {
   // Measured 2026-07-27: adding this key alone turned that error into
   // `start` + `audiostart` on an otherwise identical build.
   if (perms.speechRecognition) extraKeys += `
-  <key>NSSpeechRecognitionUsageDescription</key> <string>${perms.speechRecognition}</string>`;
+  <key>NSSpeechRecognitionUsageDescription</key> <string>${escXml(perms.speechRecognition)}</string>`;
   // tiny.audioTap ("audioTap": "app" | "system"): Core Audio process taps read
   // rendered output. The usage string is required for the capture TCC; a
   // custom reason via "audioTapReason" overrides the default.
@@ -1168,7 +1177,7 @@ async function cmdBuild() {
     const why = cfg.audioTapReason ||
       `${cfg.title} reads audio output for metering and visualization.`;
     extraKeys += `
-  <key>NSAudioCaptureUsageDescription</key> <string>${why}</string>`;
+  <key>NSAudioCaptureUsageDescription</key> <string>${escXml(why)}</string>`;
   }
   // Document types: file extensions, and optionally folders. "openFolders":
   // true is its own dict rather than another extension — a folder has no
@@ -1177,11 +1186,11 @@ async function cmdBuild() {
   if (exts.length || cfg.openFolders) {
     const dicts = [];
     if (exts.length) dicts.push(`<dict>
-    <key>CFBundleTypeName</key>   <string>${cfg.title} Document</string>
+    <key>CFBundleTypeName</key>   <string>${escXml(cfg.title)} Document</string>
     <key>CFBundleTypeRole</key>   <string>Editor</string>
     <key>LSHandlerRank</key>      <string>Default</string>
     <key>CFBundleTypeExtensions</key>
-    <array>${exts.map((e) => `<string>${e}</string>`).join('')}</array>
+    <array>${exts.map((e) => `<string>${escXml(e)}</string>`).join('')}</array>
   </dict>`);
     if (cfg.openFolders) dicts.push(`<dict>
     <key>CFBundleTypeName</key>   <string>Folder</string>
@@ -1199,11 +1208,11 @@ async function cmdBuild() {
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-  <key>CFBundleName</key>            <string>${cfg.title}</string>
-  <key>CFBundleDisplayName</key>     <string>${cfg.title}</string>
-  <key>CFBundleIdentifier</key>      <string>${cfg.id}</string>
-  <key>CFBundleVersion</key>         <string>${cfg.version || '0.1.0'}</string>
-  <key>CFBundleExecutable</key>      <string>${cfg.name}</string>
+  <key>CFBundleName</key>            <string>${escXml(cfg.title)}</string>
+  <key>CFBundleDisplayName</key>     <string>${escXml(cfg.title)}</string>
+  <key>CFBundleIdentifier</key>      <string>${escXml(cfg.id)}</string>
+  <key>CFBundleVersion</key>         <string>${escXml(cfg.version || '0.1.0')}</string>
+  <key>CFBundleExecutable</key>      <string>${escXml(cfg.name)}</string>
   <key>CFBundlePackageType</key>     <string>APPL</string>
   <key>NSHighResolutionCapable</key> <true/>${iconKey}${extraKeys}
 </dict>
