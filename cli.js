@@ -692,6 +692,174 @@ async function cmdNew() {
   tinyjs build    # package it`);
 }
 
+// tinyjs wrap <url> — scaffold a site wrapper: the "url" config makes the
+// site the main window, the per-origin API gate keeps the third-party origin
+// away from the machine, and there is no frontend at all. Everything written
+// is ordinary tinyjs config the user can edit afterwards.
+const WRAPPER_MAIN = `// Wrapper backend — the wrapped site IS the app. It gets no api functions
+// (tinyjs.json "api" gates the bridge by origin); these handlers just trace
+// navigation and downloads to the terminal so \`tinyjs dev\` shows what the
+// site does. Policy hooks: returning nothing allows, 'deny' blocks,
+// 'external' hands the url to the system browser.
+export function onNavigate(info) {
+  console.log('[nav]', info.kind, info.url);
+}
+export function onDownload(info) {
+  console.log('[dl]', info.state, info.filename ?? info.url);
+}
+export function onWindowOpen(info) {
+  console.log('[popup]', info.mode ?? info.kind, info.url);
+}
+`;
+
+const decodeEntities = (s) => s
+  .replaceAll(/&#(\d+);/g, (_, n) => String.fromCodePoint(+n))
+  .replaceAll(/&#x([0-9a-f]+);/gi, (_, n) => String.fromCodePoint(parseInt(n, 16)))
+  .replaceAll('&lt;', '<').replaceAll('&gt;', '>')
+  .replaceAll('&quot;', '"').replaceAll('&apos;', "'")
+  .replaceAll('&amp;', '&'); // last, so "&amp;lt;" becomes "&lt;" not "<"
+
+// Best icon a page advertises: apple-touch-icon (scored by sizes) > icon >
+// nothing (caller falls back to the template icon). mask-icon is a monochrome
+// glyph, deliberately scored down.
+function pickIcon(html, base) {
+  const cands = [];
+  for (const tag of html.match(/<link\b[^>]*>/gi) ?? []) {
+    const rel = (tag.match(/rel=["']([^"']+)["']/i)?.[1] ?? '').toLowerCase();
+    const href = tag.match(/href=["']([^"']+)["']/i)?.[1];
+    if (!href) continue;
+    let score = rel.includes('apple-touch-icon') ? 100 : rel.includes('icon') ? 50 : 0;
+    if (!score) continue;
+    if (rel.includes('mask-icon')) score -= 40;
+    score += Math.min(+(tag.match(/sizes=["'](\d+)x\d+/i)?.[1] ?? 0), 2048);
+    try { cands.push({ score, url: new URL(decodeEntities(href), base).href }); } catch { }
+  }
+  cands.sort((a, b) => b.score - a.score);
+  return cands[0]?.url ?? null;
+}
+
+// Modern favicons hide a real PNG inside an ICO wrapper (sips refuses the
+// container): parse the ICO directory, take the largest entry, keep it only
+// if it's a PNG — BMP entries fall back to the default icon.
+function icoPng(b) {
+  const count = b[4] | (b[5] << 8);
+  let best = null;
+  for (let i = 0; i < count; i++) {
+    const e = 6 + 16 * i;
+    const size = b[e + 8] | (b[e + 9] << 8) | (b[e + 10] << 16) | (b[e + 11] << 24);
+    const off = b[e + 12] | (b[e + 13] << 8) | (b[e + 14] << 16) | (b[e + 15] << 24);
+    const w = b[e] || 256, h = b[e + 1] || 256;
+    if (!best || w * h > best.w * best.h) best = { w, h, size, off };
+  }
+  if (!best) return null;
+  const img = b.subarray(best.off, best.off + best.size);
+  return img[0] === 0x89 && img[1] === 0x50 ? img : null;
+}
+
+// Icon bytes only if they really are an image (magic bytes, not content-type
+// — CDNs lie and error pages lie harder).
+async function fetchIcon(url, ua) {
+  if (!url) return null;
+  try {
+    const res = await fetch(url, { headers: { 'user-agent': ua } });
+    if (!res.ok) return null;
+    const b = new Uint8Array(await res.arrayBuffer());
+    const is = (magic) => magic.every((byte, i) => b[i] === byte);
+    if (is([0x89, 0x50]) || is([0xff, 0xd8]) ||
+        (is([0x52, 0x49, 0x46, 0x46]) && b[8] === 0x57 && b[9] === 0x45)) return b; // png jpg webp
+    if (is([0x00, 0x00, 0x01, 0x00])) return icoPng(b); // ICO container
+    return null;
+  } catch { return null; }
+}
+
+async function cmdWrap() {
+  if (!args[0] || args[0].startsWith('--')) {
+    fail('usage: tinyjs wrap <url> [dir] [--name <title>] [--ua <userAgent>]');
+  }
+  const url = /^https?:\/\//.test(args[0]) ? args[0] : 'https://' + args[0];
+  let base;
+  try { base = new URL(url); } catch { fail(`not a url: ${args[0]}`); }
+  if (base.protocol !== 'https:' && base.protocol !== 'http:') fail(`not a website url: ${args[0]}`);
+  const host = base.hostname;
+
+  const argVal = (flag) => {
+    const i = args.indexOf(flag);
+    return i === -1 ? null : ((args[i + 1] ?? '').replace(/^=/, '') || null);
+  };
+  const name = (argVal('--name') || host.replace(/^www\./, ''))
+    .replace(/[^a-zA-Z0-9.-]/g, '').replace(/\./g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '');
+  const dir = args[1] && !args[1].startsWith('--') ? args[1] : name;
+  if (!name) fail(`cannot derive an app name from ${host} — pass --name`);
+  if (await exists(dir)) fail(`'${dir}' already exists`);
+  const ua = argVal('--ua');
+  // The probe fetches as a plain Safari; a browser-ish UA keeps CDNs and
+  // bot-walls from serving garbage. Only a --ua the user passes reaches the
+  // app itself (Windows WebView2 serving Safari-flavored pages would be a
+  // downgrade, not a fix).
+  const probeUA = ua ||
+    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Safari/605.1.15';
+
+  // Title + icon are best-effort: an unreachable site still wraps, with a
+  // default title and the template icon.
+  console.log(`==> fetching ${base.href}`);
+  let title = null, iconUrl = null;
+  try {
+    const res = await fetch(base.href, { headers: { 'user-agent': probeUA } });
+    const html = await res.text();
+    const raw = decodeEntities((html.match(/<title[^>]*>([\s\S]*?)<\/title>/i)?.[1] ?? '').trim())
+      .replace(/\s+/g, ' ');
+    title = raw.length > 44 ? raw.slice(0, 44).replace(/\s+\S*$/, '') + '…' : raw || null;
+    iconUrl = pickIcon(html, base);
+  } catch { /* wrapped blind */ }
+
+  // Reverse-domain bundle id from the hostname: news.ycombinator.com ->
+  // com.ycombinator.news.wrap. The API gate allows exactly this host, its
+  // subdomains, and the registrable domain (last two labels — close enough
+  // except multi-part TLDs, and the cost of being wrong is only "strangers
+  // get no API", the fail-closed side).
+  const labels = host.replace(/^www\./, '').split('.').filter((s) => /^[a-zA-Z0-9-]+$/.test(s));
+  const domain = labels.slice(-2).join('.');
+  const origins = { [`https://${host}`]: 'wrapper' };
+  if (domain) origins[`https://*.${domain}`] = 'wrapper';
+  if (domain && domain !== host.replace(/^www\./, '')) origins[`https://${domain}`] = 'wrapper';
+
+  const cfg = {
+    name,
+    title: title ?? name,
+    size: '1280x800',
+    id: labels.slice().reverse().join('.').toLowerCase() + '.wrap',
+    version: '0.1.0',
+    icon: 'icon.png',
+    url: base.href,
+    api: { origins },
+    popups: 'window',   // OAuth popups keep window.opener/postMessage
+    downloads: 'ask',
+  };
+  if (ua) cfg.userAgent = ua;
+  const stamp = await toolVersion();
+  if (parseVer(stamp)) cfg.minTinyjsVersion = String(stamp).replace(/^v/, '');
+
+  await tjs.makeDir(dir + '/src', { recursive: true });
+  await tjs.writeFile(dir + '/tinyjs.json', enc.encode(JSON.stringify(cfg, null, 2) + '\n'));
+  await tjs.writeFile(dir + '/src/main.js', enc.encode(WRAPPER_MAIN));
+  let iconSrc = iconUrl;
+  let icon = await fetchIcon(iconSrc, probeUA);
+  if (!icon) {
+    iconSrc = new URL('/favicon.ico', base).href; // the /favicon.ico convention
+    icon = await fetchIcon(iconSrc, probeUA);
+  }
+  await tjs.writeFile(dir + '/icon.png', icon ?? await tjs.readFile(TOOL_DIR + 'template/icon.png'));
+
+  console.log(`created ${dir}/
+  title:  ${cfg.title}
+  icon:   ${icon ? iconSrc : 'default — nothing usable advertised or at /favicon.ico'}
+  gate:   ${host} + *.${domain} get the wrapper preset; every other origin gets no API
+
+  cd ${dir}
+  tinyjs dev      # run it
+  tinyjs build    # package it`);
+}
+
 // Dev-checkout convenience (Windows + Linux): if the native launcher sources
 // (or the injected client, which is compiled into it) are newer than the
 // built launcher, rebuild via setup.ps1 / setup.sh before starting — so
@@ -1614,6 +1782,7 @@ if (['new', 'dev', 'build', 'publish', 'notarize'].includes(cmd)) warnIfIntelMac
 
 switch (cmd) {
   case 'new': await cmdNew(); break;
+  case 'wrap': await cmdWrap(); break;
   case 'dev': await cmdDev(); break;
   case 'build': await cmdBuild(); break;
   case 'publish': await cmdPublish(); break;
@@ -1628,6 +1797,9 @@ usage:
   tinyjs new <dir>    scaffold a new app (zero dependencies)
                         --template react-ts|vue-ts|solid-ts|svelte-ts|vanilla-ts|…
                         scaffolds create-vite + tinyjs overlay instead
+  tinyjs wrap <url>   wrap a website into a desktop app (site wrapper:
+                      gated API, downloads, popup policy) — [dir],
+                      --name <title>, --ua <userAgent>
   tinyjs dev          run the app in the current directory
   tinyjs build        build dist/<name> and dist/<Name>.app (--dmg: also a disk image;
                       --arch arm64|x86_64: macOS .app for that CPU, from any Mac;
