@@ -773,7 +773,10 @@ const DIALOG_OPS = {
 // bare name); "ns.*" covers a namespace, bare "*" everything. Denied calls
 // REJECT with a readable reason — resolving null feeds bad data into callers
 // while a rejection degrades visibly.
-const API_ALWAYS = ['client.hello', 'debug.get']; // the client's own bootstrap
+// The client's own bootstrap. NOT debug.get: it's a raw launcher read-back
+// (clipboard, wifi, frontmost, other windows, selected text...), so under a
+// gate it passes only when a manifest names it (#11).
+const API_ALWAYS = ['client.hello'];
 const API_PRESETS = {
   // A site wrapper's posture: OS chrome, windows, dialogs, the app's own
   // store in; filesystem, clipboard READ, secrets, capture and automation out.

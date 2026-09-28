@@ -60,8 +60,9 @@ paths).
   app's own api methods gated too, enable by name), or `{preset, enable}` to
   layer. Enforced in `handleCall` BEFORE the dialog/find short-circuits (the
   paths that skip `methods`). Denials REJECT with a readable reason and log
-  in dev (`TINYJS_DEBUG`). `client.hello`/`debug.get` always pass (client
-  bootstrap). Verified: denied call rejected with the manifest-quoting
+  in dev (`TINYJS_DEBUG`). `client.hello` always passes (client
+  bootstrap). `debug.get` did too until #11 — it's a raw launcher read-back
+  (clipboard, wifi, frontmost...), so a gated app now has to enable it. Verified: denied call rejected with the manifest-quoting
   message; allowed calls unaffected; `wrapper` preset let a third-party
   origin use exactly the enabled surface.
 - **`"inject"`** — path in tinyjs.json, bundled at build (`.ts` via esbuild);
