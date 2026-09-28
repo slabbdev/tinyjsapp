@@ -1453,7 +1453,7 @@ knowing before trusting any multi-window store-choreographed page on Linux:
   previous run reads the OLD replies instantly and reports a full set of
   plausible, internally consistent, completely stale results.
 
-## The fetch repair shim — verified on all three, POST bodies fixed on macOS only (Bug D)
+## The fetch repair shim — verified on all three, POST bodies fixed on macOS + Windows (Bug D)
 
 bridge.js now wraps `globalThis.fetch` (search "fetch repair shim"): follows
 redirects hop-by-hop and hands exactly two broken cases to the system curl —
@@ -1471,7 +1471,7 @@ hosts (`mbedtls connect -1 5 0`). Full background: TODO-txiki.md. Every
 > Measured macOS arm64 only; presumed all three (libuv-generic) but not
 > observed elsewhere — the boxes below stay unticked for it:
 >
-> - [ ] **Windows** — small-POST hang through the shim, and the temp-file fix
+> - [x] **Windows** — the temp-file fix works; the hang itself never reproduced here (2026-09-28, note below)
 > - [ ] **Linux** — same
 >
 > **2026-09-28 — temp-file fix landed** (TODO-txiki.md Bug D). macOS arm64:
@@ -1480,6 +1480,30 @@ hosts (`mbedtls connect -1 5 0`). Full background: TODO-txiki.md. Every
 > two boxes above now mean "the fix works there". On Windows, check that the
 > `@C:\...\body` path survives `launcher --run`. It has spaces when the
 > user's profile does.
+>
+> **2026-09-28, Windows 11 (tjs v26.6.0, launcher-win.exe)** — the temp-file
+> path is good, including the spaces. A tjs TCP listener speaking raw HTTP/1.1
+> (NOT `tjs.serve` — see the note below) answered `POST /` with the body echoed
+> back; the client imported runtime/bridge.js and used the shim's `fetch`, and
+> the listener logged `user-agent: curl/8.21.0`, so every run really went
+> through curl. All completed in 50–350 ms, none hung:
+> - string 7B / 2KB / 300KB and Uint8Array 7B / 64KB, bodies byte-identical
+>   on arrival, run with and without `TINYJS_LAUNCHER` set (so both the plain
+>   `tjs.spawn` and the `launcher --run` CreateProcessW re-quoting)
+> - TMP/TEMP pointed at `C:\Users\tarwin\tmp space (test)` and at
+>   `C:\Users\tarwin\tmp sp&ce (x) 'q'` — `quote_arg` in launcher-win.cc gets
+>   `@<path>\body` across intact, spaces, `&`, parens and quotes included
+> - `Expect: 100-continue` forced by the caller: 200 when the listener answers
+>   the interim block (the shim skips the 1xx) and 200 after curl's 1s wait
+>   when it never does
+> - no `tinyjs-body-*` dirs left behind once the process outlives `p.wait()`
+>   (a process that exits the instant the response is read skips the cleanup —
+>   the dir is in tmp, so it's litter, not a leak)
+>
+> The HANG never reproduced on Windows: the pre-fix `runtime/bridge.js`
+> (HEAD~1, stdin-piped `@-`) answered the same 7-byte POST in 179 ms. So Bug D
+> looks not-libuv-generic after all — Windows was fine either way, and this
+> box means the fix is safe here, not that the bug was seen.
 >
 > Note for whoever verifies: **`tjs.serve` cannot be the peer.** It
 > normalizes `//` back to `/`, so a txiki client against a txiki server
