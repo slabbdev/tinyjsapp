@@ -4,6 +4,35 @@ All notable changes to tinyjs. Versions are git tags (`vX.Y.Z`); a tag push
 builds and publishes the release. The rendered version of this file lives at
 https://tinyjs.app/changelog.
 
+## 0.42.2 — 2026-09-28
+
+Thanks to [@slabbdev](https://github.com/slabbdev) for reporting the
+single-instance socket issue ([#12](https://github.com/tarwin/tinyjsapp/issues/12)).
+
+- **Fetch with a body no longer hangs when it goes through curl.** tinyjs
+  sends two kinds of request through the system curl instead of txiki.js's
+  own fetch: root-path URLs such as `POST https://api.example.com/`, and
+  requests where the native fetch fails outright. The body used to reach
+  curl over its stdin, and txiki.js 26.6.0 never finishes a small write to
+  a child's stdin
+  ([saghul/txiki.js#1027](https://github.com/saghul/txiki.js/issues/1027),
+  fixed upstream but not yet released). The server got the request and
+  answered it, but `await fetch(...)` never returned and no error was
+  thrown. Bodies now go to curl through a temp file in a private folder,
+  which is deleted once curl exits. This hit macOS and Linux; Windows
+  wasn't affected.
+- **Linux: the single-instance socket stays private without
+  `XDG_RUNTIME_DIR`.** A built app finds its running copy through a socket
+  named after the app id. When `XDG_RUNTIME_DIR` wasn't set (some services
+  and containers), that socket went straight into the shared temp folder.
+  Another user on the machine could create it first, so the app thought it
+  was already running and quit, or connect to it and send the app URLs and
+  file paths to open. It now goes in a per-user `tinyjs-<uid>` folder that
+  only you can access. If that folder exists and isn't yours alone, the app
+  prints a warning and runs with single instance and URL/file handoff off.
+  The socket itself is also owner-only now. Desktop sessions, which set
+  `XDG_RUNTIME_DIR`, work as before.
+
 ## 0.42.1 — 2026-09-28
 
 Security fixes from an outside review of the runtime. Thanks to
