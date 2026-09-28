@@ -13,7 +13,7 @@ HTTP server, no ports. The page NEVER has system access; everything
 privileged crosses `tiny.api`, which is why anything interpolated into
 `innerHTML` must be escaped.
 
-Current release: 0.42.0. App floors: macOS 15+ — a default build opens only
+Current release: 0.42.1. App floors: macOS 15+ — a default build opens only
 on the build Mac's CPU (`build --arch arm64|x86_64` or `--universal` for the
 other); Windows 10/11 (WebView2); Linux glibc 2.35+ (Ubuntu 22.04 / Debian 12
 / Mint 21 and up).

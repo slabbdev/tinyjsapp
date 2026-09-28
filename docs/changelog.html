@@ -132,6 +132,7 @@
     border-radius: 4px; padding: 2px 7px; margin-left: 12px; vertical-align: 2px; letter-spacing: .05em;
   }
   .rel ul { margin: 14px 0 18px; padding-left: 22px; }
+  .rel p { margin: 14px 0 0; }
   .rel li { margin: 7px 0; }
   .rel li::marker { color: var(--accent); }
   .rel b { color: var(--text); }
@@ -168,6 +169,16 @@
   </header>
 
   <section>
+
+    <div class="rel">
+      <h2>0.42.1 <span class="date">2026-09-28</span></h2>
+      <p>Security fixes from an outside review of the runtime. Thanks to <a href="https://github.com/slabbdev">@slabbdev</a> for the review, which came with repros (<a href="https://github.com/tarwin/tinyjsapp/issues/11">#11</a>), and for the fixes (<a href="https://github.com/tarwin/tinyjsapp/pull/14">#14</a>, <a href="https://github.com/tarwin/tinyjsapp/pull/15">#15</a>).</p>
+      <ul>
+        <li><b><code>debug.get</code> no longer gets past the <code>"api"</code> gate.</b> It was always allowed, listed as part of the client's startup, but the client never calls it. It reads raw values back from the launcher, including the clipboard, wifi, the frontmost app, other windows and selected text. So under <code>"api": "wrapper"</code> a hosted page could read the clipboard, which the preset says it excludes. It's now gated like every other method. If an app with an <code>"api"</code> gate calls it from the page, add <code>"debug.get"</code> to <code>enable</code>. Apps without a gate aren't affected, and neither is the backend's <code>app.debug()</code>.</li>
+        <li><b>Fetch rejects malformed headers.</b> A header value containing CR or LF went onto the wire as extra header lines, so a page could add headers of its choosing to a <code>tiny.fetch</code> request. That happened on both routes: the curl fallback, and txiki.js's own fetch, which doesn't check either. A <code>:</code> in a header name let curl send a different header, <code>Host</code> included. Names must now be valid header names and values can't contain CR, LF or NUL. Anything else throws a <code>TypeError</code> before the request is sent, as in a browser. This covers the backend's <code>fetch()</code> too. Two smaller fixes on the curl route: headers passed as <code>[[name, value]]</code> arrays were misread, and a header with an empty value was dropped instead of sent.</li>
+        <li><b><code>tinyjs build</code> escapes tinyjs.json values in Info.plist.</b> Only <code>url</code> and <code>userAgent</code> were escaped. A <code>&amp;</code> or <code>&lt;</code> in anything else, such as <code>"title": "Tom &amp; Jerry"</code>, made the plist invalid: the app was signed without complaint, but macOS refused to open it (“executable is missing”). All values are now escaped, and control characters, which XML can't hold at all, are dropped.</li>
+      </ul>
+    </div>
 
     <div class="rel">
       <h2>0.42.0 <span class="date">2026-09-24</span></h2>

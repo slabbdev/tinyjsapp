@@ -4,6 +4,40 @@ All notable changes to tinyjs. Versions are git tags (`vX.Y.Z`); a tag push
 builds and publishes the release. The rendered version of this file lives at
 https://tinyjs.app/changelog.
 
+## 0.42.1 — 2026-09-28
+
+Security fixes from an outside review of the runtime. Thanks to
+[@slabbdev](https://github.com/slabbdev) for the review, which came with
+repros ([#11](https://github.com/tarwin/tinyjsapp/issues/11)), and for the
+fixes ([#14](https://github.com/tarwin/tinyjsapp/pull/14),
+[#15](https://github.com/tarwin/tinyjsapp/pull/15)).
+
+- **`debug.get` no longer gets past the `"api"` gate.** It was always
+  allowed, listed as part of the client's startup, but the client never
+  calls it. It reads raw values back from the launcher, including the
+  clipboard, wifi, the frontmost app, other windows and selected text. So
+  under `"api": "wrapper"` a hosted page could read the clipboard, which the
+  preset says it excludes. It's now gated like every other method. If an
+  app with an `"api"` gate calls it from the page, add `"debug.get"` to
+  `enable`. Apps without a gate aren't affected, and neither is the
+  backend's `app.debug()`.
+- **Fetch rejects malformed headers.** A header value containing CR or LF
+  went onto the wire as extra header lines, so a page could add headers of
+  its choosing to a `tiny.fetch` request. That happened on both routes: the
+  curl fallback, and txiki.js's own fetch, which doesn't check either. A
+  `:` in a header name let curl send a different header, `Host` included.
+  Names must now be valid header names and values can't contain CR, LF or
+  NUL. Anything else throws a `TypeError` before the request is sent, as in
+  a browser. This covers the backend's `fetch()` too. Two smaller fixes on
+  the curl route: headers passed as `[[name, value]]` arrays were misread,
+  and a header with an empty value was dropped instead of sent.
+- **`tinyjs build` escapes tinyjs.json values in Info.plist.** Only `url`
+  and `userAgent` were escaped. A `&` or `<` in anything else, such as
+  `"title": "Tom & Jerry"`, made the plist invalid: the app was signed
+  without complaint, but macOS refused to open it ("executable is
+  missing"). All values are now escaped, and control characters, which
+  XML can't hold at all, are dropped.
+
 ## 0.42.0 — 2026-09-24
 
 - **`tinyjs` works in Git Bash on Windows.** The Windows download shipped
