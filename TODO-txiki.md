@@ -15,7 +15,8 @@ all three OSes through amp's full stack (Windows 2026-07-30: feeds and
 streams in the built app, plus the console-flash the curl spawns caused
 there, now fixed). POST request bodies were the one path nothing had
 exercised anywhere — now measured, and they found Bug D below: a small POST
-body through the shim hangs forever. See TODO-verify.md.
+body through the shim hung forever (fixed in the shim 2026-09-28). See
+TODO-verify.md.
 
 ## Bug A — root-path URLs go out as `GET //`
 
@@ -88,9 +89,8 @@ follows the http→https redirect internally and then fails the handshake.
 
 ## The plan
 
-0. **Unblock D first** — it's the only one that hangs a caller with no error,
-   and unlike A and B it can be fixed entirely in our code (temp-file body,
-   see Bug D). Do this before any txiki work; it doesn't depend on it.
+0. ~~**Unblock D first**~~ — **done 2026-09-28**: the shim stages bodies in
+   a temp file now (see Bug D).
 1. **Patch + pin.** Clone txiki v26.6.0, fix A (request-line join), B
    (mbedtls config) and C (the `uv_try_write` fast path, which retires D at
    the source), build with the existing CI recipe (setup.sh already knows
@@ -115,11 +115,10 @@ follows the http→https redirect internally and then fails the handshake.
   303/301/302-POST downgrade to GET, 307/308 preserve method+body) so hops
   landing in a broken case divert individually.
 - Bodies stream both ways (curl stdout → ReadableStream; string/Uint8Array
-  request bodies via `--data-binary @-`). Stream/Request-object inputs and
-  non-http(s) schemes bypass the shim entirely. **`@-` is a stdin pipe, so
-  this line is Bug D** — small request bodies never settle. Fix by staging
-  the body in a temp file (`@<file>`); until then the shim can only be
-  trusted for GETs and large POSTs.
+  request bodies via `--data-binary @<file>`, the file in a fresh 0700
+  temp dir removed once curl exits). Stream/Request-object inputs and
+  non-http(s) schemes bypass the shim entirely. **Never go back to `@-`:**
+  that's a stdin pipe, i.e. Bug D, until a tjs with upstream #1028 is pinned.
 - Every redirect hop is re-validated as http(s) — a hostile `Location:
   file:///etc/passwd` throws instead of reaching curl (which would read it).
   curl is additionally pinned with `--proto =http,https` and the URL sits
@@ -138,6 +137,19 @@ follows the http→https redirect internally and then fails the handshake.
   update.js's bundle probe did it, see CHANGELOG 0.30.0).
 
 ## Bug C — small writes to a child's stdin are never delivered
+
+> **Root cause found upstream (2026-07):** [saghul/txiki.js#1027] — the
+> stdin sink misreads `tjs_stream_write`'s `true` ("`uv_try_write` took it
+> all, inline") as "async write pending" and waits for a completion that
+> never comes. Big writes take the queued path, which is why size looked like
+> the variable. Fixed by [PR #1028] (merged 2026-07-12), but **no txiki tag
+> contains it** — v26.6.0 (2026-06-22) was still the latest as of
+> 2026-09-28, and our pinned tjs still hangs on the first `await
+> w.write()`. Re-check on each new txiki release; bumping `TJS_VERSION` to
+> one that has it retires this and makes the workarounds below optional.
+
+[saghul/txiki.js#1027]: https://github.com/saghul/txiki.js/issues/1027
+[PR #1028]: https://github.com/saghul/txiki.js/pull/1028
 
 `tjs.spawn(argv, { stdin: 'pipe' })`, then a single small write through the
 writer: the child receives nothing, and neither the `write()` nor the
@@ -172,7 +184,14 @@ tagged release we pin has it, before anyone builds on the stdin pipe again.
   runtime is pinned — but if the pipe ever works, `startRun` is the one place
   to change.
 
-## Bug D — a SMALL POST body through the shim hangs forever (C, in our own code)
+## ~~Bug D — a SMALL POST body through the shim hangs forever~~ — fixed 2026-09-28
+
+**Fixed** by the cheap fix below: `curlFetch` writes the body to a file in a
+fresh 0700 temp dir, passes `--data-binary @<file>`, spawns curl with
+`stdin: 'ignore'`, and removes the dir when curl exits. Verified on macOS
+arm64 against a raw Python listener: string and binary bodies to a root-path
+URL both echo intact, no temp dirs left behind. Windows and Linux: see
+TODO-verify.md. The write-up below is kept as history.
 
 Bug C is not confined to apps that spawn things. **The fetch repair shim
 itself pipes request bodies to curl over `--data-binary @-`** — i.e. the
