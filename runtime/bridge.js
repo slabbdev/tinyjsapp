@@ -84,6 +84,26 @@ let curlProbe = null;
 const haveCurl = () => (curlProbe ??= probeOk(['curl', '--version']));
 const REDIRECT_CODES = new Set([301, 302, 303, 307, 308]);
 
+// Header init (Headers, [[k, v], ...] or a plain object) as validated pairs.
+// WHATWG fetch rejects a name that isn't an RFC 9110 token and a value with
+// CR/LF/NUL; txiki's native fetch checks neither (measured 26.6.0: a CRLF in
+// a value went onto the wire as a separate header), and curl's -H turns a CRLF
+// into extra request lines and a ':' in the name into a different header
+// (Host included). A page's tiny.fetch lands here, so this is the gate.
+const HEADER_NAME = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/;
+function headerPairs(H) {
+  const pairs = [];
+  if (!H) return pairs;
+  if (Array.isArray(H)) for (const [k, v] of H) pairs.push([k, v]);
+  else if (typeof H.forEach === 'function') H.forEach((v, k) => pairs.push([k, v]));
+  else for (const k of Object.keys(H)) pairs.push([k, H[k]]);
+  for (const [k, v] of pairs) {
+    if (!HEADER_NAME.test(String(k))) throw new TypeError('Invalid header name: ' + JSON.stringify(String(k)));
+    if (/[\r\n\0]/.test(String(v))) throw new TypeError('Invalid header value for ' + k);
+  }
+  return pairs;
+}
+
 // One hop via curl, returned as a real Response with a streaming body.
 // -i puts the header block on stdout ahead of the body; no -L — the wrapper
 // follows redirects itself, so one call is always exactly one hop.
@@ -96,16 +116,15 @@ async function curlFetch(url, init = {}) {
                 '--proto', '=http,https', '--proto-redir', '=http,https'];
   if (method === 'HEAD') args.push('--head');
   else if (method !== 'GET') args.push('-X', method);
-  const pairs = [];
-  const H = init.headers;
-  if (H) {
-    if (typeof H.forEach === 'function') H.forEach((v, k) => pairs.push([k, v]));
-    else for (const k of Object.keys(H)) pairs.push([k, H[k]]);
-  }
+  // validated again here (fetchRepaired already did): a CRLF in an -H arg is
+  // request smuggling, so this hop doesn't lean on its caller
+  const pairs = headerPairs(init.headers);
   // identity unless the caller asked for something: curl won't decode what we
   // don't tell the server to send, and honest lengths beat saved bytes here
   if (!pairs.some(([k]) => k.toLowerCase() === 'accept-encoding')) pairs.push(['accept-encoding', 'identity']);
-  for (const [k, v] of pairs) args.push('-H', k + ': ' + v);
+  // "Name:" with nothing after it tells curl to REMOVE that header; "Name;"
+  // is its spelling for sending it empty
+  for (const [k, v] of pairs) args.push('-H', String(v).trim() === '' ? k + ';' : k + ': ' + v);
   const body = init.body;
   if (body != null) {
     if (typeof body !== 'string' && !(body instanceof Uint8Array))
@@ -175,6 +194,9 @@ async function curlFetch(url, init = {}) {
 }
 
 if (nativeFetch) globalThis.fetch = async function fetchRepaired(input, init = {}) {
+  // before any routing: the native path needs this as much as curl does
+  headerPairs(init.headers);
+  if (input?.headers) headerPairs(input.headers);        // a Request object
   // exotic inputs (Request objects, data:/file: urls, stream bodies) keep the
   // native path untouched — the repair rules only understand plain http(s)
   const url0 = typeof input === 'string' ? input : (input instanceof URL ? input.href : null);
