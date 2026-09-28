@@ -1468,8 +1468,8 @@ hosts (`mbedtls connect -1 5 0`). Full background: TODO-txiki.md. Every
 > (the listener logs the body and replies) — only the caller's promise never
 > resolves, so it presents as a dead network on a request that was answered.
 > Filed as **Bug D** in TODO-txiki.md with a repro and a temp-file fix.
-> Measured macOS arm64 only; presumed all three (libuv-generic) but not
-> observed elsewhere — the boxes below stay unticked for it:
+> Measured macOS arm64 at first; since seen on Linux too, but NOT on Windows
+> (2026-09-28 notes below):
 >
 > - [x] **Windows** — the temp-file fix works; the hang itself never reproduced here (2026-09-28, note below)
 > - [x] **Linux** — the hang reproduces AND the temp-file fix clears it (2026-09-28, note below)
