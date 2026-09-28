@@ -1453,7 +1453,7 @@ knowing before trusting any multi-window store-choreographed page on Linux:
   previous run reads the OLD replies instantly and reports a full set of
   plausible, internally consistent, completely stale results.
 
-## The fetch repair shim — verified on all three, POST bodies BROKEN (Bug D)
+## The fetch repair shim — verified on all three, POST bodies fixed on macOS only (Bug D)
 
 bridge.js now wraps `globalThis.fetch` (search "fetch repair shim"): follows
 redirects hop-by-hop and hands exactly two broken cases to the system curl —
@@ -1473,6 +1473,13 @@ hosts (`mbedtls connect -1 5 0`). Full background: TODO-txiki.md. Every
 >
 > - [ ] **Windows** — small-POST hang through the shim, and the temp-file fix
 > - [ ] **Linux** — same
+>
+> **2026-09-28 — temp-file fix landed** (TODO-txiki.md Bug D). macOS arm64:
+> a string and a binary body POSTed to a root-path URL both echo intact from
+> a raw Python listener, and no `tinyjs-body-*` dirs are left in tmp. The
+> two boxes above now mean "the fix works there". On Windows, check that the
+> `@C:\...\body` path survives `launcher --run`. It has spaces when the
+> user's profile does.
 >
 > Note for whoever verifies: **`tjs.serve` cannot be the peer.** It
 > normalizes `//` back to `/`, so a txiki client against a txiki server
@@ -2220,3 +2227,24 @@ Still owed, on an actual Intel Mac:
       picks `mac.x86_64` — an update from one Intel build to the next
       installs and relaunches
 - [ ] a Shelf install on Intel pulls the `-macos-x86_64.dmg`
+
+## Linux single-instance socket without `XDG_RUNTIME_DIR` (#12) — written on the Mac (2026-09-28)
+
+Built apps on Linux used to fall back to `$TMPDIR/tinyjs-app-<id>.sock` when
+`XDG_RUNTIME_DIR` was unset. That name is predictable and sits in a shared
+dir, so another user could squat it or connect to it. The fallback is now
+`$TMPDIR/tinyjs-<uid>/`, created 0700. It is refused (warning printed,
+single instance and URL/file handoff off) unless it's a real directory we
+own with no group/other bits. The socket is also `chmod 0600` after `listen()`
+either way. The dir check ran on macOS (fresh, reused, 755, symlink, plain
+file); nothing else has run yet:
+
+- [ ] **Linux, desktop session** (XDG set): socket still in
+      `$XDG_RUNTIME_DIR`, mode 600; a second launch activates the first;
+      `xdg-open myscheme://x` reaches `onOpenUrl`
+- [ ] **Linux, `env -u XDG_RUNTIME_DIR`**: socket lands in
+      `/tmp/tinyjs-<uid>/`, dir 700, socket 600; second launch + URL handoff
+      still work (the `.desktop` entry is rewritten with the new path)
+- [ ] **Linux, squatted**: as another user, `mkdir -m 777 /tmp/tinyjs-<uid>`
+      first. The app prints the warning and still opens its window, and
+      nothing that user drops in there reaches it

@@ -125,22 +125,30 @@ async function curlFetch(url, init = {}) {
   // "Name:" with nothing after it tells curl to REMOVE that header; "Name;"
   // is its spelling for sending it empty
   for (const [k, v] of pairs) args.push('-H', String(v).trim() === '' ? k + ';' : k + ': ' + v);
-  const body = init.body;
-  if (body != null) {
-    if (typeof body !== 'string' && !(body instanceof Uint8Array))
-      throw new TypeError('fetch fallback: only string/Uint8Array bodies');
-    args.push('--data-binary', '@-');
-  }
-  args.push('--', url);   // never let a URL parse as a flag
   // hiddenArgv: on Windows every hop would otherwise flash a console window
   // (curl.exe is a console app, the packaged app is GUI-subsystem)
   await readyHiddenArgv();
-  const p = tjs.spawn(hiddenArgv(args), { stdin: body != null ? 'pipe' : 'ignore', stdout: 'pipe', stderr: 'ignore' });
+  const body = init.body;
+  let bodyDir = null;
   if (body != null) {
-    const w = p.stdin.getWriter();
-    await w.write(typeof body === 'string' ? enc.encode(body) : body);
-    await w.close();
+    if (typeof body !== 'string' && !(body instanceof Uint8Array))
+      throw new TypeError('fetch fallback: only string/Uint8Array bodies');
+    // a file, not stdin: txiki 26.6.0 never settles a spawned child's stdin
+    // write (saghul/txiki.js#1027, fixed after that release), so the old
+    // `await w.write(body)` hung every curl-routed request with a body. The
+    // 0700 dir keeps the body private; it goes once curl has exited.
+    bodyDir = await tjs.makeTempDir(tjs.tmpDir + '/tinyjs-body-XXXXXX');
+    try { await tjs.writeFile(bodyDir + '/body', body); }
+    catch (e) { tjs.remove(bodyDir).catch(() => {}); throw e; }
+    args.push('--data-binary', '@' + bodyDir + '/body');
   }
+  args.push('--', url);   // never let a URL parse as a flag
+  const dropBody = () => bodyDir && tjs.remove(bodyDir).catch(() => {});
+  let p;
+  try {
+    p = tjs.spawn(hiddenArgv(args), { stdin: 'ignore', stdout: 'pipe', stderr: 'ignore' });
+  } catch (e) { dropBody(); throw e; }
+  if (bodyDir) p.wait().then(dropBody, dropBody);
   if (init.signal) {
     const kill = () => { try { p.kill(); } catch {} };
     init.signal.aborted ? kill() : init.signal.addEventListener('abort', kill);
@@ -270,6 +278,31 @@ async function distroId() {
 }
 
 // does `argv` exit 0? used to ask gst-inspect whether a decoder exists
+// Where a built Linux app's single-instance socket lives. $XDG_RUNTIME_DIR
+// is the per-user 0700 dir made for exactly this. Without it (services,
+// containers) the name still has to be guessable — a second launch finds the
+// first by app id alone — so it goes in a per-user dir under tmp rather than
+// loose in the shared one, where any local user could squat the name or
+// connect and feed us open-url/open-files (#12). A dir already there that
+// isn't a 0700 one we own may be someone else's squat: no single instance
+// beats trusting it.
+async function linuxInstanceSock(name) {
+  let dir = tjs.env.XDG_RUNTIME_DIR;
+  if (!dir) {
+    const uid = tjs.system.userInfo.userId;
+    dir = tjs.tmpDir + '/tinyjs-' + uid;
+    await tjs.makeDir(dir, { mode: 0o700 }).catch(() => {});
+    try {
+      const st = await tjs.lstat(dir);            // lstat: a symlink fails isDirectory
+      if (!st.isDirectory || st.uid !== uid || (st.mode & 0o077)) throw 0;
+    } catch {
+      console.log(`tinyjs: ${dir} is not a private dir owned by this user — single instance and URL/file handoff are off`);
+      return null;
+    }
+  }
+  return dir + '/tinyjs-app-' + name + '.sock';
+}
+
 async function probeOk(argv) {
   try {
     await readyHiddenArgv();
@@ -2891,9 +2924,9 @@ export async function createApp({ html, htmlPath, url = null, title = 'tinyjs', 
   if ((IS_WIN || IS_LINUX) && (await bundlePath())) {
     const instPipe = IS_WIN
       ? '\\\\.\\pipe\\tinyjs-app-' + (id || 'tinyjs-app')
-      : (tjs.env.XDG_RUNTIME_DIR || tjs.tmpDir) + '/tinyjs-app-' + (id || 'tinyjs-app') + '.sock';
+      : await linuxInstanceSock(id || 'tinyjs-app');
     let haveInstancePipe = false;
-    try {
+    if (instPipe) try {
       const conn = await tjs.connect('pipe', instPipe);
       const { writable } = await conn.opened;
       const w = writable.getWriter();
@@ -2906,10 +2939,13 @@ export async function createApp({ html, htmlPath, url = null, title = 'tinyjs', 
     } catch {}
     // A unix socket left by a crashed instance blocks listen() — nothing
     // answered above, so it's stale; clear it. (Windows pipes need no cleanup.)
-    if (IS_LINUX) await tjs.remove(instPipe).catch(() => {});
-    try {
+    if (IS_LINUX && instPipe) await tjs.remove(instPipe).catch(() => {});
+    if (instPipe) try {
       const srv = await tjs.listen('pipe', instPipe);
       const srvInfo = await srv.opened;
+      // the socket comes out umask-wide; the dir around it is already 0700
+      // (#12), this is belt and braces
+      if (IS_LINUX) await tjs.chmod(instPipe, 0o600).catch(() => {});
       haveInstancePipe = true;
       (async () => {
         const acceptReader = srvInfo.readable.getReader();
