@@ -902,8 +902,10 @@ async function maybeWriteCliShim(cfg, appBundle) {
 // in the bundle's plist verbatim, and an unescaped & or < makes the plist
 // invalid XML: plutil rejects it, LaunchServices can't resolve the bundle
 // ("executable is missing" from open/Finder), and notarization tooling that
-// parses the plist strictly refuses it.
+// parses the plist strictly refuses it. C0 control chars (bar tab/LF/CR) are
+// illegal in XML 1.0 even as &#x..; references, so they're dropped.
 const escXml = (s) => String(s ?? '')
+  .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F]/g, '')
   .replace(/&/g, '&amp;').replace(/</g, '&lt;')
   .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 
