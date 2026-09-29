@@ -707,7 +707,12 @@ function wrapperMain({ title, menubar, top, external, panel }) {
       '  // Menu-bar app: no Dock icon (activation in tinyjs.json), the tray\n' +
       '  // icon toggles the window, closing hides instead of quitting.\n' +
       '  app.setHideOnClose(true);\n' +
-      "  app.tray.set({ icon: 'sf:globe' });");
+      "  // Tray icon: the project's own icon.png (fetched or picked), with its\n" +
+      '  // colors (template:false — pngs would otherwise be monochrome\n' +
+      '  // templates). Falls back to the globe symbol when there is none.\n' +
+      "  let trayIcon = 'sf:globe';\n" +
+      "  try { await tjs.stat('icon.png'); trayIcon = 'icon.png'; } catch { }\n" +
+      '  app.tray.set({ icon: trayIcon, template: false });');
   }
   if (top || panel) init.push('  app.setAlwaysOnTop(true);');
   if (panel) init.push('  app.setResizable(false); // a dropdown panel is fixed-size');
@@ -740,7 +745,7 @@ function wrapperMain({ title, menubar, top, external, panel }) {
 // site does. Policy hooks: returning nothing allows, 'deny' blocks,
 // 'external' hands the url to the system browser.
 const EXTERNAL = ${JSON.stringify(external ?? [])}; // hostnames opened in the system browser
-${init.length ? 'export function init(app) {\n' + init.join('\n\n') + '\n}\n' : ''}${tray}
+${init.length ? 'export async function init(app) {\n' + init.join('\n\n') + '\n}\n' : ''}${tray}
 export function onNavigate(info) {
   if (info.kind === 'policy' && EXTERNAL.length) {
     try {
