@@ -707,8 +707,7 @@ function wrapperMain({ title, menubar, top, external }) {
       '  // Menu-bar app: no Dock icon (activation in tinyjs.json), the tray\n' +
       '  // icon toggles the window, closing hides instead of quitting.\n' +
       '  app.setHideOnClose(true);\n' +
-      "  app.tray.set({ icon: 'sf:globe', title: " + JSON.stringify(title) + ',' +
-      ' tooltip: ' + JSON.stringify(title) + ' });');
+      "  app.tray.set({ icon: 'sf:globe' });");
   }
   if (top) init.push('  app.setAlwaysOnTop(true);');
   return `// Wrapper backend — the wrapped site IS the app. It gets no api functions
@@ -801,7 +800,7 @@ async function fetchIcon(url, ua) {
 
 async function cmdWrap() {
   if (!args[0] || args[0].startsWith('--')) {
-    fail('usage: tinyjs wrap <url> [dir] [--name <title>] [--ua <userAgent>] [--menubar] [--top] [--external a.com,b.com]');
+    fail('usage: tinyjs wrap <url> [dir] [--name <title>] [--ua <userAgent>] [--menubar] [--top] [--external a.com,b.com] [--force]');
   }
   const url = /^https?:\/\//.test(args[0]) ? args[0] : 'https://' + args[0];
   let base;
@@ -816,8 +815,16 @@ async function cmdWrap() {
   const name = (argVal('--name') || host.replace(/^www\./, ''))
     .replace(/[^a-zA-Z0-9.-]/g, '').replace(/\./g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '');
   const dir = args[1] && !args[1].startsWith('--') ? args[1] : name;
+  const force = args.includes('--force');
   if (!name) fail(`cannot derive an app name from ${host} — pass --name`);
-  if (await exists(dir)) fail(`'${dir}' already exists`);
+  if (await exists(dir)) {
+    // --force regenerates an existing tinyjs project in place (the Studio's
+    // edit flow); anything else still refuses to clobber.
+    if (force && await exists(dir + '/tinyjs.json')) {
+      console.log(`==> overwriting ${dir}`);
+      await tjs.remove(dir, { recursive: true });
+    } else fail(`'${dir}' already exists (--force overwrites a tinyjs project)`);
+  }
   const ua = argVal('--ua');
   // The probe fetches as a plain Safari; a browser-ish UA keeps CDNs and
   // bot-walls from serving garbage. Only a --ua the user passes reaches the
@@ -874,6 +881,9 @@ async function cmdWrap() {
   const external = (argVal('--external') ?? '')
     .split(',').map((s) => s.trim().toLowerCase()).filter((s) => s && !s.includes('/'));
   if (menubar) cfg.activation = 'accessory';
+  // Persist the generator options so a Studio edit-flow can restore the
+  // form from the project alone (badge/external are merged by the Studio).
+  if (menubar || top) cfg.studio = { ...(cfg.studio ?? {}), menubar, top };
   const stamp = await toolVersion();
   if (parseVer(stamp)) cfg.minTinyjsVersion = String(stamp).replace(/^v/, '');
 
