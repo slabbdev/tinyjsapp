@@ -710,6 +710,7 @@ function wrapperMain({ title, menubar, top, external, panel }) {
       "  app.tray.set({ icon: 'sf:globe' });");
   }
   if (top || panel) init.push('  app.setAlwaysOnTop(true);');
+  if (panel) init.push('  app.setResizable(false); // a dropdown panel is fixed-size');
   let tray = '';
   if (menubar && panel) {
     tray = '\n// Tray click toggles the dropdown panel anchored under the icon; an' +
