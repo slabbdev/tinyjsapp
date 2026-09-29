@@ -936,6 +936,8 @@ async function cmdWrap() {
     try {
       await runCapture(['osascript', '-l', 'JavaScript',
         TOOL_DIR + 'native/pad-icon.jxa', dir + '/icon.png']);
+      // the Cocoa pass renders at the source's scale (can be 2048) — pin to 1024
+      await run(['sips', '-z', '1024', '1024', dir + '/icon.png'], { stdout: 'ignore', stderr: 'ignore' });
       console.log('==> icon padded to the Apple grid');
     } catch { /* keep the raw icon */ }
   }
