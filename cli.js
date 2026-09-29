@@ -928,6 +928,17 @@ async function cmdWrap() {
     icon = await fetchIcon(iconSrc, probeUA);
   }
   await tjs.writeFile(dir + '/icon.png', icon ?? await tjs.readFile(TOOL_DIR + 'template/icon.png'));
+  // Apple icon grid: fetched favicons are full-bleed, so the dock/menu-bar
+  // icon renders oversized next to system apps. Pad to ~82% content on a
+  // transparent 1024 canvas (JXA + Cocoa, macOS only — other platforms
+  // keep the raw icon; their icon pipelines inset differently).
+  if (!IS_WIN && !IS_LINUX && icon) {
+    try {
+      await runCapture(['osascript', '-l', 'JavaScript',
+        TOOL_DIR + 'native/pad-icon.jxa', dir + '/icon.png']);
+      console.log('==> icon padded to the Apple grid');
+    } catch { /* keep the raw icon */ }
+  }
 
   console.log(`created ${dir}/
   title:  ${cfg.title}
