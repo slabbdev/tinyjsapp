@@ -1306,7 +1306,7 @@ export async function createApp({ html, htmlPath, url = null, title = 'tinyjs', 
   let rescueArmed = null;                  // null = fingerprint still resolving
   const rescuePending = new Set();         // first-moves seen while resolving
   const rescueSeen = new Set();            // 'winid:pos' / 'winid:show' consumed
-  const sendOnscreen = (wid) => send(wid === 'main' ? 'WINOP onscreen' : 'WINOP@' + wid + ' onscreen');
+  const sendOnscreen = (wid) => send(wid === 'main' ? 'WINOP onscreen' : 'WINOP@' + one(wid) + ' onscreen');
   function rescueNote(wid, kind) {
     if (!rescueOn || rescueArmed === false) return;
     const key = wid + ':' + kind;
@@ -1382,7 +1382,7 @@ export async function createApp({ html, htmlPath, url = null, title = 'tinyjs', 
     // app.window(id).updateMenuItem().
     updateMenuItem(id, patch = {}) { send('MENUUPD ' + menuUpdWire(id, patch)); },
     // { exists, label, checked, enabled } for a menu/tray/context item.
-    getMenuItem(id) { return query('item:' + id); },
+    getMenuItem(id) { return query('item:' + one(id)); },
     // { x, y, width, height, fullscreen, minimized, visible, focused,
     //   alwaysOnTop, resizable, screen: { width, height, scale } }
     getWinState() { return query('win'); },
@@ -2012,7 +2012,7 @@ export async function createApp({ html, htmlPath, url = null, title = 'tinyjs', 
                          one(parent === true ? 'main' : parent || '')].join('\t'));
       // minSize: "WxH" — a floor under user resizes, so a layout with a
       // natural size can't be shrunk until content falls off the bottom.
-      if (minSize) send('WINOP@' + id + ' minsize ' + one(minSize));
+      if (minSize) send('WINOP@' + one(id) + ' minsize ' + one(minSize));
       // a window BORN at a restored position is the classic stale-coordinates
       // case — same chase as a first setPosition (armed boots only)
       if (hasPos) rescueNote(id, 'pos');
@@ -2026,7 +2026,7 @@ export async function createApp({ html, htmlPath, url = null, title = 'tinyjs', 
         eval: (js) => t('EVAL', esc(js)),
         push: (event, data) =>
           t('EVAL', esc('window.__emit && window.__emit(' + JSON.stringify({ event, data }) + ')')),
-        close: () => { if (id !== 'main') send('WINCLOSE ' + id); },
+        close: () => { if (id !== 'main') send('WINCLOSE ' + one(id)); },
         setTitle: (v) => t('TITLE', String(v).replace(/\n/g, ' ')),
         setSize: (w2, h2) => t('SIZE', `${w2 | 0} ${h2 | 0}`),
         setPosition: (x, y) => { t('WINOP', `pos ${x | 0} ${y | 0}`); rescueNote(id, 'pos'); },
@@ -2072,7 +2072,7 @@ export async function createApp({ html, htmlPath, url = null, title = 'tinyjs', 
         // item@<win>:<id> — this window's copy. (Bare `item:<id>` answers from
         // whichever window happens to hold one, which is what app.getMenuItem
         // and the tray/context items still want.)
-        getMenuItem: (mid) => query('item@' + id + ':' + mid),
+        getMenuItem: (mid) => query('item@' + one(id) + ':' + one(mid)),
         getState: () => query(id === 'main' ? 'win' : 'win:' + id),
         // This window's own page, on paper or as a PDF file — the print
         // panel is modal to it, and the PDF is of its document, not the
