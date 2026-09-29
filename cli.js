@@ -819,9 +819,15 @@ async function cmdWrap() {
   // get no API", the fail-closed side).
   const labels = host.replace(/^www\./, '').split('.').filter((s) => /^[a-zA-Z0-9-]+$/.test(s));
   const domain = labels.slice(-2).join('.');
-  const origins = { [`https://${host}`]: 'wrapper' };
-  if (domain) origins[`https://*.${domain}`] = 'wrapper';
-  if (domain && domain !== host.replace(/^www\./, '')) origins[`https://${domain}`] = 'wrapper';
+  // The gate matches the page's ACTUAL origin — protocol and port included
+  // (a wrapped http://127.0.0.1:8123 stamps "http://127.0.0.1:8123", which a
+  // hardcoded "https://" key never matches). Wildcards only make sense for
+  // https sites; an http origin (localhost dev servers) stays exact.
+  const origins = { [base.origin]: 'wrapper' };
+  if (base.protocol === 'https:') {
+    if (domain) origins[`https://*.${domain}`] = 'wrapper';
+    if (domain && domain !== host.replace(/^www\./, '')) origins[`https://${domain}`] = 'wrapper';
+  }
 
   const cfg = {
     name,
