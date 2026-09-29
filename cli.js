@@ -697,8 +697,10 @@ async function cmdNew() {
 // away from the machine, and there is no frontend at all. Everything written
 // is ordinary tinyjs config the user can edit afterwards.
 // The generated wrapper backend: trace handlers always; an init block plus
-// a tray toggle when --menubar is on; always-on-top when --top is on.
-function wrapperMain(title, menubar, top) {
+// a tray toggle when --menubar is on; always-on-top when --top is on;
+// --external lists domains whose navigations open in the system browser
+// (the onNavigate policy hook answers 'external' for them).
+function wrapperMain({ title, menubar, top, external }) {
   const init = [];
   if (menubar) {
     init.push(
@@ -714,8 +716,18 @@ function wrapperMain(title, menubar, top) {
 // navigation and downloads to the terminal so \`tinyjs dev\` shows what the
 // site does. Policy hooks: returning nothing allows, 'deny' blocks,
 // 'external' hands the url to the system browser.
+const EXTERNAL = ${JSON.stringify(external ?? [])}; // hostnames opened in the system browser
 ${init.length ? 'export function init(app) {\n' + init.join('\n\n') + '\n}\n' : ''}${menubar ? '\n// Bare tray icon click: surface the window.\nexport function onTray(id, app) {\n  app.show();\n}\n' : ''}
 export function onNavigate(info) {
+  if (info.kind === 'policy' && EXTERNAL.length) {
+    try {
+      const host = new URL(info.url).hostname;
+      if (EXTERNAL.some((d) => host === d || host.endsWith('.' + d))) {
+        console.log('[nav] external', info.url);
+        return 'external';
+      }
+    } catch { }
+  }
   console.log('[nav]', info.kind, info.url);
 }
 export function onDownload(info) {
@@ -789,7 +801,7 @@ async function fetchIcon(url, ua) {
 
 async function cmdWrap() {
   if (!args[0] || args[0].startsWith('--')) {
-    fail('usage: tinyjs wrap <url> [dir] [--name <title>] [--ua <userAgent>] [--menubar] [--top]');
+    fail('usage: tinyjs wrap <url> [dir] [--name <title>] [--ua <userAgent>] [--menubar] [--top] [--external a.com,b.com]');
   }
   const url = /^https?:\/\//.test(args[0]) ? args[0] : 'https://' + args[0];
   let base;
@@ -859,13 +871,15 @@ async function cmdWrap() {
   if (ua) cfg.userAgent = ua;
   const menubar = args.includes('--menubar');
   const top = args.includes('--top');
+  const external = (argVal('--external') ?? '')
+    .split(',').map((s) => s.trim().toLowerCase()).filter((s) => s && !s.includes('/'));
   if (menubar) cfg.activation = 'accessory';
   const stamp = await toolVersion();
   if (parseVer(stamp)) cfg.minTinyjsVersion = String(stamp).replace(/^v/, '');
 
   await tjs.makeDir(dir + '/src', { recursive: true });
   await tjs.writeFile(dir + '/tinyjs.json', enc.encode(JSON.stringify(cfg, null, 2) + '\n'));
-  await tjs.writeFile(dir + '/src/main.js', enc.encode(wrapperMain(cfg.title, menubar, top)));
+  await tjs.writeFile(dir + '/src/main.js', enc.encode(wrapperMain({ title: cfg.title, menubar, top, external })));
   let iconSrc = iconUrl;
   let icon = await fetchIcon(iconSrc, probeUA);
   if (!icon) {
