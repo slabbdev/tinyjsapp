@@ -697,10 +697,10 @@ async function cmdNew() {
 // away from the machine, and there is no frontend at all. Everything written
 // is ordinary tinyjs config the user can edit afterwards.
 // The generated wrapper backend: trace handlers always; an init block plus
-// a tray toggle when --menubar is on; always-on-top when --top is on;
-// --external lists domains whose navigations open in the system browser
-// (the onNavigate policy hook answers 'external' for them).
-function wrapperMain({ title, menubar, top, external }) {
+// a tray toggle when --menubar is on (window or dropdown panel); always-on-
+// top when --top is on; --external lists domains whose navigations open in
+// the system browser (the onNavigate policy hook answers 'external').
+function wrapperMain({ title, menubar, top, external, panel }) {
   const init = [];
   if (menubar) {
     init.push(
@@ -709,14 +709,37 @@ function wrapperMain({ title, menubar, top, external }) {
       '  app.setHideOnClose(true);\n' +
       "  app.tray.set({ icon: 'sf:globe' });");
   }
-  if (top) init.push('  app.setAlwaysOnTop(true);');
+  if (top || panel) init.push('  app.setAlwaysOnTop(true);');
+  let tray = '';
+  if (menubar && panel) {
+    tray = '\n// Tray click toggles the dropdown panel anchored under the icon; an' +
+      '\n// outside click defocuses it and it hides itself.\n' +
+      'let panelShown = false;\n' +
+      'const PANEL_W = 360, PANEL_H = 520;\n' +
+      'export async function onTray(id, app) {\n' +
+      '  if (panelShown) { panelShown = false; app.hide(); return; }\n' +
+      '  const t = await app.tray.position();\n' +
+      '  const x = t ? Math.max(8, Math.round(t.x + t.width / 2 - PANEL_W / 2)) : 40;\n' +
+      '  const y = t ? Math.round(t.y + t.height + 6) : 40;\n' +
+      '  app.setPosition(x, y);\n' +
+      '  app.setSize(PANEL_W, PANEL_H);\n' +
+      '  panelShown = true;\n' +
+      '  app.show(); // takes focus, so an outside click dismisses (onWindowState)\n' +
+      '}\n' +
+      'export function onWindowState(info, app) {\n' +
+      '  if (panelShown && info.focused === false) { panelShown = false; app.hide(); }\n' +
+      '}\n';
+  } else if (menubar) {
+    tray = '\n// Bare tray icon click: surface the window.\n' +
+      'export function onTray(id, app) {\n  app.show();\n}\n';
+  }
   return `// Wrapper backend — the wrapped site IS the app. It gets no api functions
 // (tinyjs.json "api" gates the bridge by origin); these handlers just trace
 // navigation and downloads to the terminal so \`tinyjs dev\` shows what the
 // site does. Policy hooks: returning nothing allows, 'deny' blocks,
 // 'external' hands the url to the system browser.
 const EXTERNAL = ${JSON.stringify(external ?? [])}; // hostnames opened in the system browser
-${init.length ? 'export function init(app) {\n' + init.join('\n\n') + '\n}\n' : ''}${menubar ? '\n// Bare tray icon click: surface the window.\nexport function onTray(id, app) {\n  app.show();\n}\n' : ''}
+${init.length ? 'export function init(app) {\n' + init.join('\n\n') + '\n}\n' : ''}${tray}
 export function onNavigate(info) {
   if (info.kind === 'policy' && EXTERNAL.length) {
     try {
@@ -800,7 +823,7 @@ async function fetchIcon(url, ua) {
 
 async function cmdWrap() {
   if (!args[0] || args[0].startsWith('--')) {
-    fail('usage: tinyjs wrap <url> [dir] [--name <title>] [--ua <userAgent>] [--menubar] [--top] [--external a.com,b.com] [--force]');
+    fail('usage: tinyjs wrap <url> [dir] [--name <title>] [--ua <userAgent>] [--menubar] [--panel] [--top] [--external a.com,b.com] [--force]');
   }
   const url = /^https?:\/\//.test(args[0]) ? args[0] : 'https://' + args[0];
   let base;
@@ -877,19 +900,21 @@ async function cmdWrap() {
   };
   if (ua) cfg.userAgent = ua;
   const menubar = args.includes('--menubar');
+  const panel = args.includes('--panel') && menubar; // a panel lives in the tray
   const top = args.includes('--top');
   const external = (argVal('--external') ?? '')
     .split(',').map((s) => s.trim().toLowerCase()).filter((s) => s && !s.includes('/'));
   if (menubar) cfg.activation = 'accessory';
+  if (panel) cfg.chrome = { ...(cfg.chrome ?? {}), frame: false, windowControls: false };
   // Persist the generator options so a Studio edit-flow can restore the
   // form from the project alone (badge/external are merged by the Studio).
-  if (menubar || top) cfg.studio = { ...(cfg.studio ?? {}), menubar, top };
+  if (menubar || top || panel) cfg.studio = { ...(cfg.studio ?? {}), menubar, top, panel };
   const stamp = await toolVersion();
   if (parseVer(stamp)) cfg.minTinyjsVersion = String(stamp).replace(/^v/, '');
 
   await tjs.makeDir(dir + '/src', { recursive: true });
   await tjs.writeFile(dir + '/tinyjs.json', enc.encode(JSON.stringify(cfg, null, 2) + '\n'));
-  await tjs.writeFile(dir + '/src/main.js', enc.encode(wrapperMain({ title: cfg.title, menubar, top, external })));
+  await tjs.writeFile(dir + '/src/main.js', enc.encode(wrapperMain({ title: cfg.title, menubar, top, external, panel })));
   let iconSrc = iconUrl;
   let icon = await fetchIcon(iconSrc, probeUA);
   if (!icon) {
