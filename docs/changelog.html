@@ -171,6 +171,14 @@
   <section>
 
     <div class="rel">
+      <h2>0.42.3 <span class="date">2026-09-29</span></h2>
+      <p>Security fix. Thanks to <a href="https://github.com/slabbdev">@slabbdev</a> for the report, which came with a repro (<a href="https://github.com/tarwin/tinyjsapp/issues/22">#22</a>), and the fix (<a href="https://github.com/tarwin/tinyjsapp/pull/23">#23</a>).</p>
+      <ul>
+        <li><b>A window id from the page can no longer add launcher commands.</b> Some window calls put the id the page passed straight onto the line the runtime sends to the launcher: <code>tiny.win.close(id)</code>, <code>win.open</code> with <code>minSize</code> or with <code>x</code>/<code>y</code>, and the menu item lookups. A newline in the id split that line in two, and the launcher ran the second half as a command of the page's choosing, which the <code>"api"</code> gate never saw. On macOS that included running AppleScript, so a page could run shell commands as the user. The line splitting worked on every platform. Any page that could call <code>win.*</code> could do it: apps without an <code>"api"</code> gate, and apps using the <code>wrapper</code> preset. Ids are now cleaned of tabs and newlines at these calls, as they already were everywhere else. Real window ids never contain them, so apps don't need to change anything.</li>
+      </ul>
+    </div>
+
+    <div class="rel">
       <h2>0.42.2 <span class="date">2026-09-28</span></h2>
       <p>Thanks to <a href="https://github.com/slabbdev">@slabbdev</a> for reporting the single-instance socket issue (<a href="https://github.com/tarwin/tinyjsapp/issues/12">#12</a>).</p>
       <ul>

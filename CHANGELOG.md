@@ -4,6 +4,26 @@ All notable changes to tinyjs. Versions are git tags (`vX.Y.Z`); a tag push
 builds and publishes the release. The rendered version of this file lives at
 https://tinyjs.app/changelog.
 
+## 0.42.3 — 2026-09-29
+
+Security fix. Thanks to [@slabbdev](https://github.com/slabbdev) for the
+report, which came with a repro
+([#22](https://github.com/tarwin/tinyjsapp/issues/22)), and the fix
+([#23](https://github.com/tarwin/tinyjsapp/pull/23)).
+
+- **A window id from the page can no longer add launcher commands.** Some
+  window calls put the id the page passed straight onto the line the
+  runtime sends to the launcher: `tiny.win.close(id)`, `win.open` with
+  `minSize` or with `x`/`y`, and the menu item lookups. A newline in the id
+  split that line in two, and the launcher ran the second half as a
+  command of the page's choosing, which the `"api"` gate never saw. On
+  macOS that included running AppleScript, so a page could run shell
+  commands as the user. The line splitting worked on every platform. Any
+  page that could call `win.*` could do it: apps without an `"api"` gate,
+  and apps using the `wrapper` preset. Ids are now cleaned of tabs and
+  newlines at these calls, as they already were everywhere else. Real
+  window ids never contain them, so apps don't need to change anything.
+
 ## 0.42.2 — 2026-09-28
 
 Thanks to [@slabbdev](https://github.com/slabbdev) for reporting the
