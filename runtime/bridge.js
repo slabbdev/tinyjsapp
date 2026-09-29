@@ -1306,7 +1306,7 @@ export async function createApp({ html, htmlPath, url = null, title = 'tinyjs', 
   let rescueArmed = null;                  // null = fingerprint still resolving
   const rescuePending = new Set();         // first-moves seen while resolving
   const rescueSeen = new Set();            // 'winid:pos' / 'winid:show' consumed
-  const sendOnscreen = (wid) => send(wid === 'main' ? 'WINOP onscreen' : 'WINOP@' + wid + ' onscreen');
+  const sendOnscreen = (wid) => send(wid === 'main' ? 'WINOP onscreen' : 'WINOP@' + one(wid) + ' onscreen');
   function rescueNote(wid, kind) {
     if (!rescueOn || rescueArmed === false) return;
     const key = wid + ':' + kind;
