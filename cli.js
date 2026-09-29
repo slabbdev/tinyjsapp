@@ -696,11 +696,25 @@ async function cmdNew() {
 // site the main window, the per-origin API gate keeps the third-party origin
 // away from the machine, and there is no frontend at all. Everything written
 // is ordinary tinyjs config the user can edit afterwards.
-const WRAPPER_MAIN = `// Wrapper backend — the wrapped site IS the app. It gets no api functions
+// The generated wrapper backend: trace handlers always; an init block plus
+// a tray toggle when --menubar is on; always-on-top when --top is on.
+function wrapperMain(title, menubar, top) {
+  const init = [];
+  if (menubar) {
+    init.push(
+      '  // Menu-bar app: no Dock icon (activation in tinyjs.json), the tray\n' +
+      '  // icon toggles the window, closing hides instead of quitting.\n' +
+      '  app.setHideOnClose(true);\n' +
+      "  app.tray.set({ icon: 'sf:globe', title: " + JSON.stringify(title) + ',' +
+      ' tooltip: ' + JSON.stringify(title) + ' });');
+  }
+  if (top) init.push('  app.setAlwaysOnTop(true);');
+  return `// Wrapper backend — the wrapped site IS the app. It gets no api functions
 // (tinyjs.json "api" gates the bridge by origin); these handlers just trace
 // navigation and downloads to the terminal so \`tinyjs dev\` shows what the
 // site does. Policy hooks: returning nothing allows, 'deny' blocks,
 // 'external' hands the url to the system browser.
+${init.length ? 'export function init(app) {\n' + init.join('\n\n') + '\n}\n' : ''}${menubar ? '\n// Bare tray icon click: surface the window.\nexport function onTray(id, app) {\n  app.show();\n}\n' : ''}
 export function onNavigate(info) {
   console.log('[nav]', info.kind, info.url);
 }
@@ -711,6 +725,7 @@ export function onWindowOpen(info) {
   console.log('[popup]', info.mode ?? info.kind, info.url);
 }
 `;
+}
 
 const decodeEntities = (s) => s
   .replaceAll(/&#(\d+);/g, (_, n) => String.fromCodePoint(+n))
@@ -774,7 +789,7 @@ async function fetchIcon(url, ua) {
 
 async function cmdWrap() {
   if (!args[0] || args[0].startsWith('--')) {
-    fail('usage: tinyjs wrap <url> [dir] [--name <title>] [--ua <userAgent>]');
+    fail('usage: tinyjs wrap <url> [dir] [--name <title>] [--ua <userAgent>] [--menubar] [--top]');
   }
   const url = /^https?:\/\//.test(args[0]) ? args[0] : 'https://' + args[0];
   let base;
@@ -842,12 +857,15 @@ async function cmdWrap() {
     downloads: 'ask',
   };
   if (ua) cfg.userAgent = ua;
+  const menubar = args.includes('--menubar');
+  const top = args.includes('--top');
+  if (menubar) cfg.activation = 'accessory';
   const stamp = await toolVersion();
   if (parseVer(stamp)) cfg.minTinyjsVersion = String(stamp).replace(/^v/, '');
 
   await tjs.makeDir(dir + '/src', { recursive: true });
   await tjs.writeFile(dir + '/tinyjs.json', enc.encode(JSON.stringify(cfg, null, 2) + '\n'));
-  await tjs.writeFile(dir + '/src/main.js', enc.encode(WRAPPER_MAIN));
+  await tjs.writeFile(dir + '/src/main.js', enc.encode(wrapperMain(cfg.title, menubar, top)));
   let iconSrc = iconUrl;
   let icon = await fetchIcon(iconSrc, probeUA);
   if (!icon) {
