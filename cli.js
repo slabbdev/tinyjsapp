@@ -855,9 +855,98 @@ async function fetchIcon(url, ua) {
   return null;
 }
 
+// ---- the public suffix list (PSL) ----
+// Decides where a wildcard may stop: the registrable domain (etld+1), so a
+// wrap of bbc.co.uk may offer *.bbc.co.uk but never *.co.uk, and a hosting-
+// suffix tenant (sam.github.io) stays exact. Fetched at wrap time and cached
+// ~30 days; with no list and no cache, wrap keeps the exact origin only.
+
+const PSL_URL = 'https://publicsuffix.org/list/public_suffix_list.dat';
+
+function parsePsl(dat) {
+  const rules = new Set(), wild = new Set(), except = new Set(), priv = new Set();
+  let privateSection = false;
+  for (const raw of dat.split('\n')) {
+    const line = raw.trim().toLowerCase();
+    if (!line) continue;
+    // The section markers live INSIDE comments in the real list — check for
+    // them before the generic comment strip below.
+    if (line.includes('===begin private domains')) { privateSection = true; continue; }
+    if (line.includes('===end private domains')) { privateSection = false; continue; }
+    if (line.startsWith('//')) continue;
+    if (line.startsWith('!')) { const e = line.slice(1); except.add(e); if (privateSection) priv.add('!' + e); }
+    else if (line.startsWith('*.')) { const e = line.slice(2); wild.add(e); if (privateSection) priv.add('*.' + e); }
+    else { rules.add(line); if (privateSection) priv.add(line); }
+  }
+  return { rules, wild, except, priv };
+}
+
+// The prevailing rule for host: exceptions first (!x points one label down),
+// then the LONGEST exact match, then a wildcard (*.x matches one label above
+// x), the longer beating the shorter; no match at all → the TLD itself (the
+// implicit * rule). priv = the match came from the PRIVATE section (hosting
+// suffixes like github.io, where a tenant doesn't own the zone above it).
+function publicSuffixOf(host, psl) {
+  const labels = host.split('.');
+  for (let i = 0; i < labels.length; i++) {
+    const cand = labels.slice(i).join('.');
+    if (psl.except.has(cand))
+      return { ps: cand.split('.').slice(1).join('.'), priv: psl.priv.has('!' + cand) };
+  }
+  let best = null;
+  for (let i = 0; i < labels.length; i++) {
+    const cand = labels.slice(i).join('.');
+    if (psl.rules.has(cand)) { best = { ps: cand, priv: psl.priv.has(cand) }; break; }
+  }
+  for (let i = 0; i + 1 < labels.length; i++) {
+    if (psl.wild.has(labels.slice(i + 1).join('.'))) {
+      const w = labels.slice(i).join('.');
+      if (!best || w.split('.').length > best.ps.split('.').length)
+        best = { ps: w, priv: psl.priv.has('*.' + labels.slice(i + 1).join('.')) };
+      break;
+    }
+  }
+  return best ?? { ps: labels[labels.length - 1], priv: false };
+}
+
+// etld+1, plus tenant=true when a wildcard would trust a zone we cannot
+// attribute to the caller: the host IS a public suffix, or sits directly on
+// a PRIVATE one (sam.github.io — the tenant doesn't own the zone above it;
+// bbc.co.uk under the ICANN co.uk does, so *.bbc.co.uk is offered).
+function registrableDomain(host, psl) {
+  const { ps, priv } = publicSuffixOf(host, psl);
+  if (!ps || host === ps) return { reg: null, tenant: true };
+  const reg = host.slice(0, host.length - ps.length - 1).split('.').pop() + '.' + ps;
+  return { reg, tenant: reg === host && priv };
+}
+
+async function loadPsl() {
+  const home = tjs.env.HOME || tjs.env.USERPROFILE || '';
+  const base = IS_WIN ? (tjs.env.LOCALAPPDATA || home + '\\AppData\\Local') + '\\tinyjs'
+    : IS_LINUX ? (tjs.env.XDG_CACHE_HOME || home + '/.cache') + '/tinyjs'
+    : home + '/Library/Caches/tinyjs';
+  const path = base + '/public-suffix-list.dat';
+  let dat = null;
+  try {
+    const st = await tjs.stat(path);
+    if (Date.now() - st.mtim.getTime() < 30 * 86400 * 1000) dat = dec.decode(await tjs.readFile(path));
+  } catch { }
+  if (dat === null) {
+    const b = await fetchCapped(PSL_URL, 'tinyjs-wrap', { timeout: 15000, cap: 2 * 1024 * 1024 });
+    if (b) {
+      dat = dec.decode(b);
+      try { await tjs.makeDir(base, { recursive: true }); await tjs.writeFile(path, b); } catch { }
+    } else {
+      try { dat = dec.decode(await tjs.readFile(path)); console.log('==> public suffix list unreachable — using the cached copy'); }
+      catch { console.log('==> public suffix list unreachable — wrapping without one (exact origins only)'); return null; }
+    }
+  }
+  return parsePsl(dat);
+}
+
 async function cmdWrap() {
   if (!args[0] || args[0].startsWith('--')) {
-    fail('usage: tinyjs wrap <url> [dir] [--name <name>] [--ua <userAgent>] [--menubar] [--panel] [--top] [--external a.com,b.com] [--force]');
+    fail('usage: tinyjs wrap <url> [dir] [--name <name>] [--ua <userAgent>] [--menubar] [--panel] [--top] [--external a.com,b.com] [--origins exact|subdomains|url,…] [--yes] [--force]');
   }
   const url = /^https?:\/\//.test(args[0]) ? args[0] : 'https://' + args[0];
   let base;
@@ -908,28 +997,70 @@ async function cmdWrap() {
     iconUrl = pickIcon(html, base);
   }
 
-  // Reverse-domain bundle id from the hostname: news.ycombinator.com ->
-  // com.ycombinator.news.wrap. The API gate allows exactly this host, its
-  // subdomains, and the registrable domain (last two labels — close enough
-  // except multi-part TLDs, and the cost of being wrong is only "strangers
-  // get no API", the fail-closed side).
-  const labels = host.replace(/^www\./, '').split('.').filter((s) => /^[a-zA-Z0-9-]+$/.test(s));
-  const domain = labels.slice(-2).join('.');
+  // ---- the API gate: exact origin by default, subdomains opt-in ----
   // The gate matches the page's ACTUAL origin — protocol and port included
   // (a wrapped http://127.0.0.1:8123 stamps "http://127.0.0.1:8123", which a
-  // hardcoded "https://" key never matches). Wildcards only make sense for
-  // https sites; an http origin (localhost dev servers) stays exact.
-  const origins = { [base.origin]: 'wrapper' };
-  if (base.protocol === 'https:') {
-    if (domain) origins[`https://*.${domain}`] = 'wrapper';
-    if (domain && domain !== host.replace(/^www\./, '')) origins[`https://${domain}`] = 'wrapper';
+  // hardcoded "https://" key never matches). Wildcards are opt-in and never
+  // cross a public suffix: the PSL decides where the registrable domain ends
+  // (bbc.co.uk may widen to *.bbc.co.uk; sam.github.io, a tenant on a
+  // hosting suffix, and every IP or http origin stay exact). No list and no
+  // cache → exact only, the fail-closed side.
+  const labels = host.replace(/^www\./, '').split('.').filter((s) => /^[a-zA-Z0-9-]+$/.test(s));
+  const isIP = /^(?:\d{1,3}\.){3}\d{1,3}$/.test(host) || host.includes(':');
+  const isTTY = (() => { try { return !!(tjs.stdin.isTerminal?.() ?? tjs.stdin.isTTY); } catch { return false; } })();
+  const yes = args.includes('--yes');
+  const originsFlag = argVal('--origins');
+  const psl = isIP || base.protocol !== 'https:' ? null : await loadPsl();
+  const widen = psl ? registrableDomain(host.replace(/^www\./, ''), psl)
+                    : { reg: null, tenant: true };
+  const wildcardOrigin = widen.reg && !widen.tenant ? `https://*.${widen.reg}` : null;
+  const regOrigin = widen.reg ? `https://${widen.reg}` : null;
+
+  let origins = { [base.origin]: 'wrapper' };
+  let gateNote = base.protocol !== 'https:' ? 'http origin — exact only'
+    : isIP ? 'IP host — exact only'
+    : widen.reg === null ? `${host} sits on a public suffix — exact only`
+    : widen.tenant ? `${host} sits directly on a hosting suffix — exact only`
+    : null;
+  const addWildcard = () => {
+    origins[wildcardOrigin] = 'wrapper';
+    if (regOrigin && !(regOrigin in origins)) origins[regOrigin] = 'wrapper';
+    gateNote = null;
+  };
+  if (originsFlag !== null) {
+    if (originsFlag === 'subdomains') {
+      if (wildcardOrigin) addWildcard();
+      else console.log(`==> note: no wildcard available (${gateNote})`);
+    } else if (originsFlag !== 'exact') {
+      let ignored = 0;
+      for (const entry of originsFlag.split(',').map((s) => s.trim()).filter(Boolean)) {
+        try {
+          const u = new URL(entry);
+          if (u.protocol !== 'https:' && u.protocol !== 'http:') throw 0;
+          origins[u.origin] = 'wrapper';
+        } catch { ignored++; console.log(`==> note: ignoring unparseable --origins entry: ${entry}`); }
+      }
+      gateNote = ignored ? 'explicit --origins list (some entries ignored)' : 'explicit --origins list';
+    }
+  } else if (!yes && isTTY && wildcardOrigin) {
+    console.log('\nAPI access for this app:');
+    console.log(`  [1] ${base.origin} only (recommended)`);
+    console.log(`  [2] + subdomains:  ${wildcardOrigin}`);
+    await tjs.stdout.write(enc.encode('choose [1/2, enter = 1]: '));
+    const buf = new Uint8Array(32);
+    const n = await tjs.stdin.read(buf);
+    if (dec.decode(buf.subarray(0, n)).trim() === '2') addWildcard();
+  } else if (!yes && !isTTY && originsFlag === null && wildcardOrigin) {
+    console.log(`==> note: non-interactive — exact origin only (pass --origins subdomains for ${wildcardOrigin})`);
   }
 
   const cfg = {
     name,
     title: title ?? name,
     size: '1280x800',
-    id: labels.slice().reverse().join('.').toLowerCase() + '.wrap',
+    id: isIP
+      ? 'ip-' + host.replace(/[^a-zA-Z0-9]+/g, '-').replace(/^-+|-+$/g, '') + '.wrap'
+      : labels.slice().reverse().join('.').toLowerCase() + '.wrap',
     version: '0.1.0',
     icon: 'icon.png',
     url: base.href,
@@ -1005,11 +1136,13 @@ async function cmdWrap() {
     } catch { /* keep the raw icon */ }
   }
 
+  const extra = Object.keys(origins).filter((k) => k !== base.origin);
   console.log(`created ${dir}/
   title:  ${cfg.title}
   icon:   ${icon ? iconSrc : 'default — nothing usable advertised or at /favicon.ico'}
-  gate:   ${host} + *.${domain} get the wrapper preset; every other origin
-          only gets window chrome (win.close/minimize/zoom/startDrag)
+  gate:   ${base.origin}${extra.length ? ' + ' + extra.join(' + ') : ' (exact only)'} → wrapper preset
+          ${gateNote ? gateNote + ' · ' : ''}every other origin → window chrome only
+          (win.close/minimize/zoom/startDrag)
 
   cd ${dir}
   tinyjs dev      # run it
@@ -1957,7 +2090,9 @@ usage:
                       gated API, downloads, popup policy) — [dir],
                       --name <name>, --ua <userAgent>, --menubar,
                       --panel (needs --menubar), --top,
-                      --external a.com,b.com, --force
+                      --external a.com,b.com, --force,
+                      --origins exact|subdomains|url,… (default: exact),
+                      --yes (skip the origins prompt)
   tinyjs dev          run the app in the current directory
   tinyjs build        build dist/<name> and dist/<Name>.app (--dmg: also a disk image;
                       --arch arm64|x86_64: macOS .app for that CPU, from any Mac;
