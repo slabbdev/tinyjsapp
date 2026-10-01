@@ -811,25 +811,53 @@ function icoPng(b) {
   return img[0] === 0x89 && img[1] === 0x50 ? img : null;
 }
 
+// First 8 hex chars of a SHA-256 digest (generation stamps).
+const hex8 = (digest) => [...new Uint8Array(digest).slice(0, 4)]
+  .map((b) => b.toString(16).padStart(2, '0')).join('');
+
+// fetch with a hard timeout and a body cap: a slow or hostile site can
+// neither hang wrap nor feed it an unbounded body. Resolves null on timeout,
+// oversize, or any failure — callers treat that as "wrapped blind".
+async function fetchCapped(url, ua, { timeout, cap }) {
+  const ctl = new AbortController();
+  const timer = setTimeout(() => ctl.abort(), timeout);
+  try {
+    const res = await fetch(url, { headers: { 'user-agent': ua }, signal: ctl.signal });
+    if (!res.ok) return null;
+    const reader = res.body.getReader();
+    const chunks = [];
+    let total = 0;
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      chunks.push(value);
+      total += value.length;
+      if (total > cap) { try { await reader.cancel(); } catch { } return null; }
+    }
+    const out = new Uint8Array(total);
+    let off = 0;
+    for (const c of chunks) { out.set(c, off); off += c.length; }
+    return out;
+  } catch { return null; }
+  finally { clearTimeout(timer); }
+}
+
 // Icon bytes only if they really are an image (magic bytes, not content-type
-// — CDNs lie and error pages lie harder).
+// — CDNs lie and error pages lie harder). 5 s timeout, 5 MB cap.
 async function fetchIcon(url, ua) {
   if (!url) return null;
-  try {
-    const res = await fetch(url, { headers: { 'user-agent': ua } });
-    if (!res.ok) return null;
-    const b = new Uint8Array(await res.arrayBuffer());
-    const is = (magic) => magic.every((byte, i) => b[i] === byte);
-    if (is([0x89, 0x50]) || is([0xff, 0xd8]) ||
-        (is([0x52, 0x49, 0x46, 0x46]) && b[8] === 0x57 && b[9] === 0x45)) return b; // png jpg webp
-    if (is([0x00, 0x00, 0x01, 0x00])) return icoPng(b); // ICO container
-    return null;
-  } catch { return null; }
+  const b = await fetchCapped(url, ua, { timeout: 5000, cap: 5 * 1024 * 1024 });
+  if (!b) return null;
+  const is = (magic) => magic.every((byte, i) => b[i] === byte);
+  if (is([0x89, 0x50]) || is([0xff, 0xd8]) ||
+      (is([0x52, 0x49, 0x46, 0x46]) && b[8] === 0x57 && b[9] === 0x45)) return b; // png jpg webp
+  if (is([0x00, 0x00, 0x01, 0x00])) return icoPng(b); // ICO container
+  return null;
 }
 
 async function cmdWrap() {
   if (!args[0] || args[0].startsWith('--')) {
-    fail('usage: tinyjs wrap <url> [dir] [--name <title>] [--ua <userAgent>] [--menubar] [--panel] [--top] [--external a.com,b.com] [--force]');
+    fail('usage: tinyjs wrap <url> [dir] [--name <name>] [--ua <userAgent>] [--menubar] [--panel] [--top] [--external a.com,b.com] [--force]');
   }
   const url = /^https?:\/\//.test(args[0]) ? args[0] : 'https://' + args[0];
   let base;
@@ -837,22 +865,26 @@ async function cmdWrap() {
   if (base.protocol !== 'https:' && base.protocol !== 'http:') fail(`not a website url: ${args[0]}`);
   const host = base.hostname;
 
+  // --flag value and --flag=value both work (the old .replace(/^=/, '') ran
+  // against the FOLLOWING arg, so --name=Foo silently did nothing).
   const argVal = (flag) => {
+    const eq = args.find((a) => a.startsWith(flag + '='));
+    if (eq !== undefined) return eq.slice(flag.length + 1) || null;
     const i = args.indexOf(flag);
-    return i === -1 ? null : ((args[i + 1] ?? '').replace(/^=/, '') || null);
+    return i === -1 ? null : (args[i + 1] ?? '') || null;
   };
   const name = (argVal('--name') || host.replace(/^www\./, ''))
     .replace(/[^a-zA-Z0-9.-]/g, '').replace(/\./g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '');
   const dir = args[1] && !args[1].startsWith('--') ? args[1] : name;
   const force = args.includes('--force');
   if (!name) fail(`cannot derive an app name from ${host} — pass --name`);
+  const regen = force && await exists(dir + '/tinyjs.json');
   if (await exists(dir)) {
-    // --force regenerates an existing tinyjs project in place (the Studio's
-    // edit flow); anything else still refuses to clobber.
-    if (force && await exists(dir + '/tinyjs.json')) {
-      console.log(`==> overwriting ${dir}`);
-      await tjs.remove(dir, { recursive: true });
-    } else fail(`'${dir}' already exists (--force overwrites a tinyjs project)`);
+    // --force regenerates an existing wrapped project in place: it overwrites
+    // ONLY the files this generator owns (tinyjs.json, src/main.js, icon.png)
+    // and leaves the user's own edits, added files and .git alone.
+    if (!regen) fail(`'${dir}' already exists (--force overwrites a tinyjs project)`);
+    console.log(`==> overwriting ${dir} (generated files only)`);
   }
   const ua = argVal('--ua');
   // The probe fetches as a plain Safari; a browser-ish UA keeps CDNs and
@@ -863,17 +895,18 @@ async function cmdWrap() {
     'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Safari/605.1.15';
 
   // Title + icon are best-effort: an unreachable site still wraps, with a
-  // default title and the template icon.
+  // default title and the template icon. Timeout + body cap so a slow or
+  // hostile site can't hang wrap or feed it an unbounded page.
   console.log(`==> fetching ${base.href}`);
   let title = null, iconUrl = null;
-  try {
-    const res = await fetch(base.href, { headers: { 'user-agent': probeUA } });
-    const html = await res.text();
+  const page = await fetchCapped(base.href, probeUA, { timeout: 10000, cap: 2 * 1024 * 1024 });
+  if (page !== null) {
+    const html = dec.decode(page);
     const raw = decodeEntities((html.match(/<title[^>]*>([\s\S]*?)<\/title>/i)?.[1] ?? '').trim())
       .replace(/\s+/g, ' ');
     title = raw.length > 44 ? raw.slice(0, 44).replace(/\s+\S*$/, '') + '…' : raw || null;
     iconUrl = pickIcon(html, base);
-  } catch { /* wrapped blind */ }
+  }
 
   // Reverse-domain bundle id from the hostname: news.ycombinator.com ->
   // com.ycombinator.news.wrap. The API gate allows exactly this host, its
@@ -906,28 +939,48 @@ async function cmdWrap() {
   };
   if (ua) cfg.userAgent = ua;
   const menubar = args.includes('--menubar');
+  if (args.includes('--panel') && !menubar)
+    console.log("==> note: --panel needs --menubar (a panel lives in the tray) — ignoring --panel");
   const panel = args.includes('--panel') && menubar; // a panel lives in the tray
   const top = args.includes('--top');
   const external = (argVal('--external') ?? '')
     .split(',').map((s) => s.trim().toLowerCase()).filter((s) => s && !s.includes('/'));
   if (menubar) cfg.activation = 'accessory';
   if (panel) cfg.chrome = { ...(cfg.chrome ?? {}), frame: false, windowControls: false };
-  // Persist the generator options so a Studio edit-flow can restore the
-  // form from the project alone (badge/external are merged by the Studio).
-  if (menubar || top || panel) cfg.studio = { ...(cfg.studio ?? {}), menubar, top, panel };
+  // (Studio form state used to persist here as a "studio" key — tinyjs.json
+  // only carries what the runtime or CLI reads; Studio keeps its own file.)
   const stamp = await toolVersion();
   if (parseVer(stamp)) cfg.minTinyjsVersion = String(stamp).replace(/^v/, '');
 
+  // The generated backend is stamped with the hash of its own body, so a
+  // later --force can warn when src/main.js was edited since generation.
+  const mainSrc = wrapperMain({ title: cfg.title, menubar, top, external, panel });
+  const mainHash = hex8(await crypto.subtle.digest('SHA-256', enc.encode(mainSrc)));
+  if (regen && await exists(dir + '/src/main.js')) {
+    // The stamp records the hash of the generated body; re-hash the file's
+    // own body and compare against it — an edit since generation (or an
+    // unstamped older file) warns before --force overwrites it.
+    const prev = dec.decode(await tjs.readFile(dir + '/src/main.js'));
+    const m = prev.match(/^\/\/ generated by tinyjs wrap \(([0-9a-f]{8})\)\n([\s\S]*)$/);
+    const intact = m && hex8(await crypto.subtle.digest('SHA-256', enc.encode(m[2]))) === m[1];
+    if (!intact)
+      console.log('==> note: src/main.js changed since it was generated — --force overwrites it');
+  }
   await tjs.makeDir(dir + '/src', { recursive: true });
   await tjs.writeFile(dir + '/tinyjs.json', enc.encode(JSON.stringify(cfg, null, 2) + '\n'));
-  await tjs.writeFile(dir + '/src/main.js', enc.encode(wrapperMain({ title: cfg.title, menubar, top, external, panel })));
+  await tjs.writeFile(dir + '/src/main.js',
+    enc.encode(`// generated by tinyjs wrap (${mainHash})\n` + mainSrc));
   let iconSrc = iconUrl;
   let icon = await fetchIcon(iconSrc, probeUA);
   if (!icon) {
     iconSrc = new URL('/favicon.ico', base).href; // the /favicon.ico convention
     icon = await fetchIcon(iconSrc, probeUA);
   }
-  await tjs.writeFile(dir + '/icon.png', icon ?? await tjs.readFile(TOOL_DIR + 'template/icon.png'));
+  // A --force re-wrap that finds no icon keeps the one already on disk —
+  // overwriting a good icon with the template would be a downgrade.
+  const hadIcon = regen && await exists(dir + '/icon.png');
+  if (icon || !hadIcon)
+    await tjs.writeFile(dir + '/icon.png', icon ?? await tjs.readFile(TOOL_DIR + 'template/icon.png'));
   // Apple icon grid: fetched favicons are full-bleed, so the dock/menu-bar
   // icon renders oversized next to system apps. Pad to ~82% content on a
   // transparent 1024 canvas (JXA + Cocoa, macOS only — other platforms
@@ -1891,7 +1944,9 @@ usage:
                         scaffolds create-vite + tinyjs overlay instead
   tinyjs wrap <url>   wrap a website into a desktop app (site wrapper:
                       gated API, downloads, popup policy) — [dir],
-                      --name <title>, --ua <userAgent>
+                      --name <name>, --ua <userAgent>, --menubar,
+                      --panel (needs --menubar), --top,
+                      --external a.com,b.com, --force
   tinyjs dev          run the app in the current directory
   tinyjs build        build dist/<name> and dist/<Name>.app (--dmg: also a disk image;
                       --arch arm64|x86_64: macOS .app for that CPU, from any Mac;
