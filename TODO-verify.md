@@ -1453,7 +1453,7 @@ knowing before trusting any multi-window store-choreographed page on Linux:
   previous run reads the OLD replies instantly and reports a full set of
   plausible, internally consistent, completely stale results.
 
-## The fetch repair shim — verified on all three, POST bodies BROKEN (Bug D)
+## The fetch repair shim — verified on all three, POST bodies fixed on all three (Bug D)
 
 bridge.js now wraps `globalThis.fetch` (search "fetch repair shim"): follows
 redirects hop-by-hop and hands exactly two broken cases to the system curl —
@@ -1468,11 +1468,53 @@ hosts (`mbedtls connect -1 5 0`). Full background: TODO-txiki.md. Every
 > (the listener logs the body and replies) — only the caller's promise never
 > resolves, so it presents as a dead network on a request that was answered.
 > Filed as **Bug D** in TODO-txiki.md with a repro and a temp-file fix.
-> Measured macOS arm64 only; presumed all three (libuv-generic) but not
-> observed elsewhere — the boxes below stay unticked for it:
+> Measured macOS arm64 at first; since seen on Linux too, but NOT on Windows
+> (2026-09-28 notes below):
 >
-> - [ ] **Windows** — small-POST hang through the shim, and the temp-file fix
-> - [ ] **Linux** — same
+> - [x] **Windows** — the temp-file fix works; the hang itself never reproduced here (2026-09-28, note below)
+> - [x] **Linux** — the hang reproduces AND the temp-file fix clears it (2026-09-28, note below)
+>
+> **2026-09-28 — temp-file fix landed** (TODO-txiki.md Bug D). macOS arm64:
+> a string and a binary body POSTed to a root-path URL both echo intact from
+> a raw Python listener, and no `tinyjs-body-*` dirs are left in tmp. The
+> two boxes above now mean "the fix works there". On Windows, check that the
+> `@C:\...\body` path survives `launcher --run`. It has spaces when the
+> user's profile does.
+>
+> **2026-09-28, Windows 11 (tjs v26.6.0, launcher-win.exe)** — the temp-file
+> path is good, including the spaces. A tjs TCP listener speaking raw HTTP/1.1
+> (NOT `tjs.serve` — see the note below) answered `POST /` with the body echoed
+> back; the client imported runtime/bridge.js and used the shim's `fetch`, and
+> the listener logged `user-agent: curl/8.21.0`, so every run really went
+> through curl. All completed in 50–350 ms, none hung:
+> - string 7B / 2KB / 300KB and Uint8Array 7B / 64KB, bodies byte-identical
+>   on arrival, run with and without `TINYJS_LAUNCHER` set (so both the plain
+>   `tjs.spawn` and the `launcher --run` CreateProcessW re-quoting)
+> - TMP/TEMP pointed at `C:\Users\tarwin\tmp space (test)` and at
+>   `C:\Users\tarwin\tmp sp&ce (x) 'q'` — `quote_arg` in launcher-win.cc gets
+>   `@<path>\body` across intact, spaces, `&`, parens and quotes included
+> - `Expect: 100-continue` forced by the caller: 200 when the listener answers
+>   the interim block (the shim skips the 1xx) and 200 after curl's 1s wait
+>   when it never does
+> - no `tinyjs-body-*` dirs left behind once the process outlives `p.wait()`
+>   (a process that exits the instant the response is read skips the cleanup —
+>   the dir is in tmp, so it's litter, not a leak)
+>
+> The HANG never reproduced on Windows: the pre-fix `runtime/bridge.js`
+> (HEAD~1, stdin-piped `@-`) answered the same 7-byte POST in 179 ms. So Bug D
+> looks not-libuv-generic after all — Windows was fine either way, and this
+> box means the fix is safe here, not that the bug was seen.
+>
+> **2026-09-28, Linux arm64 (Ubuntu 24.04 VM, tjs v26.6.0, curl 8.5.0)** —
+> raw Python HTTP/1.1 listener echoing `POST /`, client importing
+> runtime/bridge.js under `bin/tjs run`; listener logged `curl/8.5.0` on every
+> request. Fixed shim: string 7B / 2KB / 300KB and Uint8Array 7B / 64KB all
+> byte-identical, 3–16 ms. Pre-fix bridge.js (HEAD~2, `@-`): 7B, 2KB, u8 7B
+> and u8 64KB all HUNG (5s cap) although the listener received and answered
+> each one; only 300KB completed. So unlike Windows, Linux has Bug D exactly
+> as macOS does. Also: TMPDIR=`…/tmp sp&ce (x) 'q'` passes the same five;
+> an aborted in-flight POST rejects (`curl exit SIGTERM`) and leaves no
+> `tinyjs-body-*` dir; none left behind after any run.
 >
 > Note for whoever verifies: **`tjs.serve` cannot be the peer.** It
 > normalizes `//` back to `/`, so a txiki client against a txiki server
@@ -2220,3 +2262,35 @@ Still owed, on an actual Intel Mac:
       picks `mac.x86_64` — an update from one Intel build to the next
       installs and relaunches
 - [ ] a Shelf install on Intel pulls the `-macos-x86_64.dmg`
+
+## Linux single-instance socket without `XDG_RUNTIME_DIR` (#12) — written on the Mac (2026-09-28)
+
+Built apps on Linux used to fall back to `$TMPDIR/tinyjs-app-<id>.sock` when
+`XDG_RUNTIME_DIR` was unset. That name is predictable and sits in a shared
+dir, so another user could squat it or connect to it. The fallback is now
+`$TMPDIR/tinyjs-<uid>/`, created 0700. It is refused (warning printed,
+single instance and URL/file handoff off) unless it's a real directory we
+own with no group/other bits. The socket is also `chmod 0600` after `listen()`
+either way. The dir check ran on macOS (fresh, reused, 755, symlink, plain
+file); nothing else has run yet:
+
+- [x] **Linux, desktop session** (XDG set): socket still in
+      `$XDG_RUNTIME_DIR`, mode 600; a second launch activates the first;
+      `xdg-open myscheme://x` reaches `onOpenUrl`
+- [x] **Linux, `env -u XDG_RUNTIME_DIR`**: socket lands in
+      `/tmp/tinyjs-<uid>/`, dir 700, socket 600; second launch + URL handoff
+      still work (the `.desktop` entry is rewritten with the new path)
+- [x] **Linux, squatted**: as another user, `mkdir -m 777 /tmp/tinyjs-<uid>`
+      first. The app prints the warning and still opens its window, and
+      nothing that user drops in there reaches it
+
+2026-09-28, Linux arm64 VM (GNOME Wayland; the no-XDG runs used
+GDK_BACKEND=x11), a `tinyjs build` app with `urlScheme`: XDG set → socket
+`/run/user/1000/…sock` `srw-------`, second launch exits 0 leaving one
+instance, `xdg-open tjsinsttest://…` reached `onOpenUrl`. XDG unset →
+`/tmp/tinyjs-1000/` created `drwx------`, socket `srw-------`, second launch
+hands off, the `.desktop` Exec was rewritten to `--open /tmp/tinyjs-1000/…`
+and `xdg-open` reached `onOpenUrl`. Refused, with the warning printed and the
+window still opening, for: a 777 dir we own, a symlink to a dir we own, a
+plain file, and (made via a root docker container, no sudo on the VM) a dir
+owned by `nobody` at 700 and at 777. No socket was created in any refused dir.
