@@ -933,7 +933,17 @@ async function cmdWrap() {
     version: '0.1.0',
     icon: 'icon.png',
     url: base.href,
-    api: { origins },
+    // Window chrome lives in the TOP-LEVEL lists, not in the runtime's
+    // API_ALWAYS: an origin that matches no key (a redirect target like
+    // consent.google.com) falls through to them, so a wrapped page keeps
+    // close/minimize/zoom/drag on any origin it lands on while every other
+    // capability stays closed. Per-app and visible in the manifest — the
+    // gate policy no longer changes for every tinyjs app (#20 review).
+    api: {
+      disable: ['*'],
+      enable: ['win.close', 'win.minimize', 'win.zoom', 'win.startDrag'],
+      origins,
+    },
     popups: 'window',   // OAuth popups keep window.opener/postMessage
     downloads: 'ask',
   };
@@ -998,7 +1008,8 @@ async function cmdWrap() {
   console.log(`created ${dir}/
   title:  ${cfg.title}
   icon:   ${icon ? iconSrc : 'default — nothing usable advertised or at /favicon.ico'}
-  gate:   ${host} + *.${domain} get the wrapper preset; every other origin gets no API
+  gate:   ${host} + *.${domain} get the wrapper preset; every other origin
+          only gets window chrome (win.close/minimize/zoom/startDrag)
 
   cd ${dir}
   tinyjs dev      # run it

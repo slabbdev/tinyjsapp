@@ -776,14 +776,7 @@ const DIALOG_OPS = {
 // The client's own bootstrap. NOT debug.get: it's a raw launcher read-back
 // (clipboard, wifi, frontmost, other windows, selected text...), so under a
 // gate it passes only when a manifest names it (#11).
-// Window chrome rides along as ALWAYS too: it is app machinery, not site
-// capability. A wrapped page that redirects to a stranger origin must keep
-// the frameless drag-strip working — measured live: google.fr →
-// consent.google.com and slabb.dev → buymeacoffee.com both denied
-// win.close/win.minimize/win.zoom under a strict per-origin gate, leaving
-// an uncloseable window. Worst case for a hostile page is annoyance (it can
-// close or shrink the window it runs in), never data.
-const API_ALWAYS = ['client.hello', 'win.close', 'win.minimize', 'win.zoom', 'win.startDrag'];
+const API_ALWAYS = ['client.hello'];
 const API_PRESETS = {
   // A site wrapper's posture: OS chrome, windows, dialogs, the app's own
   // store in; filesystem, clipboard READ, secrets, capture and automation out.
