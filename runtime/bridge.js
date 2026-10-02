@@ -2212,9 +2212,12 @@ export async function createApp({ html, htmlPath, url = null, title = 'tinyjs', 
   // page. Small responses come back whole (base64 in the RET); with
   // { stream: true } the body stays open and the page pulls it chunk-by-chunk
   // (fetch.pull), so an endless source (internet radio) streams with natural
-  // backpressure and never buffers unbounded. Keyed by a page-supplied id and
-  // cancelled by fetch.cancel or when the owner window closes.
-  const fetchStreams = new Map(); // id -> { reader, win }
+  // backpressure and never buffers unbounded. Keyed by the CALLING window plus
+  // the page-supplied id: every page counts f1, f2… from scratch, so a bare id
+  // let two windows' streams collide and one window pull (or cancel) another's
+  // body (#30). Cancelled by fetch.cancel or when the owner window closes.
+  const fetchStreams = new Map(); // '<win>\n<id>' -> { reader, win }
+  const streamKey = (m, id) => (m?.window || 'main') + '\n' + String(id);
   // tiny.audioTap: one native tap per app; `audioTapOwner` is the window that
   // started it, so closing that window tears the tap down (like fetchStreams).
   let audioTapOwner = null;
@@ -2235,10 +2238,10 @@ export async function createApp({ html, htmlPath, url = null, title = 'tinyjs', 
     for (let i = 0; i < bin.length; i++) u8[i] = bin.charCodeAt(i);
     return u8;
   };
-  function cancelFetchStream(id) {
-    const s = fetchStreams.get(id);
+  function cancelFetchStream(key) {
+    const s = fetchStreams.get(key);
     if (!s) return;
-    fetchStreams.delete(id);
+    fetchStreams.delete(key);
     try { s.reader.cancel(); } catch {}
   }
   async function doFetch(p, _a, m) {
@@ -2257,20 +2260,24 @@ export async function createApp({ html, htmlPath, url = null, title = 'tinyjs', 
     };
     if (!p.stream) return { ...head, bodyB64: u8ToB64(new Uint8Array(await res.arrayBuffer())) };
     // The page pulls chunks on demand; keep the reader alive under its id.
-    fetchStreams.set(p.id, { reader: res.body.getReader(), win: m?.window || 'main' });
+    // A reloaded page reuses ids — drop the stream it left behind first.
+    const key = streamKey(m, p.id);
+    cancelFetchStream(key);
+    fetchStreams.set(key, { reader: res.body.getReader(), win: m?.window || 'main' });
     return { ...head, streaming: true };
   }
-  async function pullFetchStream({ id }) {
-    const s = fetchStreams.get(id);
+  async function pullFetchStream({ id }, _a, m) {
+    const key = streamKey(m, id);
+    const s = fetchStreams.get(key);
     if (!s) return { done: true };
     let r;
     try {
       r = await s.reader.read();
     } catch (e) {
-      fetchStreams.delete(id);
+      fetchStreams.delete(key);
       throw e; // surfaces as an error on the page's ReadableStream
     }
-    if (r.done) { fetchStreams.delete(id); return { done: true }; }
+    if (r.done) { fetchStreams.delete(key); return { done: true }; }
     return { done: false, bodyB64: u8ToB64(r.value) };
   }
 
@@ -2475,7 +2482,7 @@ export async function createApp({ html, htmlPath, url = null, title = 'tinyjs', 
   const builtins = {
     fetch: doFetch,
     'fetch.pull': pullFetchStream,
-    'fetch.cancel': async ({ id }) => (cancelFetchStream(id), true),
+    'fetch.cancel': async ({ id }, _a, m) => (cancelFetchStream(streamKey(m, id)), true),
     ping: async () => 'pong',
     log: async ({ msg }) => (console.log('[web]', msg), true),
     quit: async () => (app.quit(), true),
