@@ -26,11 +26,31 @@ case "$(uname -m)" in
 esac
 
 # Linux runs the system WebKitGTK — check it's there before downloading.
-if [ "$PLAT" = linux ] && ! ldconfig -p 2>/dev/null | grep -q libwebkit2gtk-4.1; then
+# ldconfig is only reachable via $PATH, and sbin usually isn't on a normal
+# user's PATH (openSUSE keeps it in /usr/sbin), which made this check report
+# a false miss there. Try the direct paths too, then pkg-config, then the
+# library file for systems with no ldconfig at all.
+HAVE_WEBKIT=""
+if [ "$PLAT" = linux ]; then
+  for ldc in ldconfig /sbin/ldconfig /usr/sbin/ldconfig; do
+    "$ldc" -p 2>/dev/null | grep -q libwebkit2gtk-4.1 && { HAVE_WEBKIT=1; break; }
+  done
+  if [ -z "$HAVE_WEBKIT" ] && command -v pkg-config >/dev/null 2>&1 &&
+     pkg-config --exists webkit2gtk-4.1 2>/dev/null; then
+    HAVE_WEBKIT=1
+  fi
+  if [ -z "$HAVE_WEBKIT" ]; then
+    for d in /usr/lib /usr/lib64 /usr/lib/*-linux-gnu; do
+      ls "$d"/libwebkit2gtk-4.1.so* >/dev/null 2>&1 && { HAVE_WEBKIT=1; break; }
+    done
+  fi
+fi
+if [ "$PLAT" = linux ] && [ -z "$HAVE_WEBKIT" ]; then
   echo "tinyjs needs the WebKitGTK runtime." >&2
   echo "  Debian/Ubuntu:  sudo apt install libwebkit2gtk-4.1-0" >&2
   echo "  Fedora:         sudo dnf install webkit2gtk4.1" >&2
   echo "  Arch:           sudo pacman -S webkit2gtk-4.1" >&2
+  echo "  openSUSE:       sudo zypper install libwebkit2gtk-4_1-0" >&2
   echo "then re-run this installer." >&2
   exit 1
 fi
