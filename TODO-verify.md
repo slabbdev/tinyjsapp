@@ -2436,3 +2436,33 @@ pass; a wrong x86_64 pin → `::error::` and exit 1.
 - [ ] **Linux #30.4** — `rm bin/tjs && ./setup.sh` (prebuilt download) and
   `rm bin/tjs && TJS_BUILD=1 ./setup.sh` (source build) both still produce a
   working `bin/tjs`; no `/tmp/tmp.*` dir left afterwards.
+
+**#29.4 — built Windows/Linux apps ignore inherited env knobs.** `bridge.js`
+decides `built` from `bundlePath()` (exe isn't `tjs` and has a `launcher`
+beside it). When built it ignores `TINYJS_HTML`, `TINYJS_LAUNCHER` (both
+lookups, incl. the Windows hidden-spawn one) and `TINYJS_SOCKET`, and strips
+every inherited `TINYJS_*` and `WEBVIEW2_*` var from the launcher's env before
+setting its own from the manifest — only `TINYJS_LAUNCHER_DEBUG` (Windows drag
+logging) survives. The WEBVIEW2 one mattered most: the bridge APPENDED its
+flags to an inherited `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS`, so
+`--remote-debugging-port=9222` rode straight into a shipped app. macOS is
+untouched (`built` is always false there; packaged .apps read plist keys).
+macOS, seen 2026-10-02: bridge imports; `TINYJS_HTML=… tinyjs dev` still
+swaps the page (store write + self-quit). Nothing below has run.
+
+- [ ] **Windows #29.4** — `tinyjs build` any app, then from cmd, one at a time
+  against `dist\<name>.exe`:
+  `set TINYJS_HTML=C:\abs\other.html` → the app's OWN page loads;
+  `set TINYJS_INJECT=document.title='pwned'` → title unchanged;
+  `set WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=--remote-debugging-port=9222` →
+  `curl http://127.0.0.1:9222/json` refused while the app is up;
+  `set TINYJS_DEBUG=open` → no devtools. Then the same app still updates,
+  relaunches and single-instances (TINYJS_APP_EXE is set by us, not inherited).
+- [ ] **Windows #29.4, dev regression** — `TINYJS_HTML=… tinyjs dev` still
+  loads the override page; F12 devtools still there in dev.
+- [ ] **Linux #29.4** — built app: `TINYJS_HTML=/abs/other.html ./dist/<name>`
+  → own page; `TINYJS_INJECT="document.title='pwned'"` → unchanged;
+  `TINYJS_MEDIA=camera,microphone` on an app that declares no permissions →
+  `getUserMedia` still `NotAllowedError`. Tray icon, WM class / .desktop
+  match and the icon still right (TINYJS_APP_ID/ICON now always ours).
+- [ ] **Linux #29.4, dev regression** — `TINYJS_HTML=… tinyjs dev` unchanged.

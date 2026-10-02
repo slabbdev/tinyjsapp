@@ -57,7 +57,9 @@ const hiddenArgv = (args) => (runPrefix ? [...runPrefix, ...args] : args);
 async function readyHiddenArgv() {
   if (!IS_WIN || runPrefix || runPrefixTried) return;
   runPrefixTried = true;
-  const cand = tjs.env.TINYJS_LAUNCHER || dirOf(tjs.exePath) + '/launcher.exe';
+  // A built app never takes its launcher from the env (#29, see createApp).
+  const envLauncher = (await bundlePath()) ? null : tjs.env.TINYJS_LAUNCHER;
+  const cand = envLauncher || dirOf(tjs.exePath) + '/launcher.exe';
   try {
     await tjs.stat(cand);
     runPrefix = [cand, '--run'];
@@ -1035,7 +1037,14 @@ export async function createApp({ html, htmlPath, url = null, title = 'tinyjs', 
   //    LaunchServices-registered process gives it deep links, file-open events,
   //    and single-instancing.
   //  - spawn (dev + bare binary): we create the socket and spawn the launcher.
-  const attachPath = tjs.env.TINYJS_SOCKET;
+  // A built Windows/Linux app runs as built: the TINYJS_* env knobs are dev
+  // plumbing (cli.js sets them), and honoring inherited ones let whatever
+  // started the app swap its page (TINYJS_HTML), its launcher, inject script,
+  // widen media/read access, or hand WebView2 flags like
+  // --remote-debugging-port (#29). Only attach is macOS-.app plumbing, so it
+  // is ignored there too.
+  const built = (IS_WIN || IS_LINUX) && !!(await bundlePath());
+  const attachPath = built ? null : tjs.env.TINYJS_SOCKET;
   let proc = null;
   let readable, writable;
   let pagePath = null;
@@ -1048,7 +1057,7 @@ export async function createApp({ html, htmlPath, url = null, title = 'tinyjs', 
   } else {
     // Launcher: explicit option > env override > next to the executable.
     const launcherName = IS_WIN ? 'launcher.exe' : 'launcher';
-    let launcher = launcherPath || tjs.env.TINYJS_LAUNCHER;
+    let launcher = launcherPath || (built ? null : tjs.env.TINYJS_LAUNCHER);
     if (!launcher && (await exists(exeDir + launcherName))) launcher = exeDir + launcherName;
     if (!launcher || !(await exists(launcher))) {
       throw new Error('tinyjs launcher binary not found (looked at: ' + (launcher || exeDir + launcherName) + ')');
@@ -1068,7 +1077,7 @@ export async function createApp({ html, htmlPath, url = null, title = 'tinyjs', 
     //  - htmlPath: the real file is handed to the launcher, so sibling css/js/
     //    images load relatively (multi-file frontends); RELOAD re-reads disk
     //  - html string: materialized into the private workDir
-    const overridePath = tjs.env.TINYJS_HTML;
+    const overridePath = built ? null : tjs.env.TINYJS_HTML;
     if (url && !overridePath) {
       // "url": the main window IS a remote page (site wrappers) — nothing to
       // materialize; the launcher navigates straight there (the same branch
@@ -1093,6 +1102,13 @@ export async function createApp({ html, htmlPath, url = null, title = 'tinyjs', 
     // readAccess widens the page's file:// read root (same, via the env in
     // dev / the TinyjsReadAccess plist key in packaged apps).
     const spawnEnv = { ...tjs.env };
+    // Built: drop every inherited knob before setting our own (see `built`).
+    // TINYJS_LAUNCHER_DEBUG stays — Windows drag diagnostics, logging only.
+    if (built) {
+      for (const k of Object.keys(spawnEnv)) {
+        if (/^(tinyjs|webview2)_/i.test(k) && !/^tinyjs_launcher_debug$/i.test(k)) delete spawnEnv[k];
+      }
+    }
     if (activation === 'accessory') spawnEnv.TINYJS_ACTIVATION = 'accessory';
     // Windows: a transparent main window must drop its GDI redirection
     // bitmap AT CREATION (stale white shows through a late-cleared webview
