@@ -1,0 +1,29 @@
+// Pads an app icon to the Apple icon grid: the source image (usually a
+// full-bleed site favicon) is drawn centered at ~82% of a 1024 transparent
+// canvas, so dock/menu-bar icons don't look oversized next to system apps.
+// Usage: osascript -l JavaScript pad-icon.jxa <png-path>
+ObjC.import('Cocoa');
+
+function run(argv) {
+  const path = argv[0];
+  const src = $.NSImage.alloc.initWithContentsOfFile(path);
+  if (src.isNil()) return 'no image at ' + path;
+
+  const S = 1024;
+  const img = $.NSImage.alloc.initWithSize($.NSMakeSize(S, S));
+  img.lockFocus;
+
+  // Apple's grid: the icon shape occupies ~82% of the tile, ~9% inset.
+  const inset = S * 0.09;
+  const rect = $.NSMakeRect(inset, inset, S - 2 * inset, S - 2 * inset);
+  // compositing operation 2 = sourceOver (drawn over the transparent canvas)
+  src.drawInRectFromRectOperationFraction(rect, $.NSZeroRect, 2, 1.0);
+
+  img.unlockFocus;
+
+  const tiff = img.TIFFRepresentation;
+  const rep = $.NSBitmapImageRep.imageRepWithData(tiff);
+  const png = rep.representationUsingTypeProperties($.NSBitmapImageFileTypePNG, $.NSDictionary.dictionary);
+  png.writeToFileAtomically(path, true);
+  return 'padded ' + path;
+}

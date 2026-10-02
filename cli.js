@@ -692,6 +692,463 @@ async function cmdNew() {
   tinyjs build    # package it`);
 }
 
+// tinyjs wrap <url> — scaffold a site wrapper: the "url" config makes the
+// site the main window, the per-origin API gate keeps the third-party origin
+// away from the machine, and there is no frontend at all. Everything written
+// is ordinary tinyjs config the user can edit afterwards.
+// The generated wrapper backend: trace handlers always; an init block plus
+// a tray toggle when --menubar is on (window or dropdown panel); always-on-
+// top when --top is on; --external lists domains whose navigations open in
+// the system browser (the onNavigate policy hook answers 'external').
+function wrapperMain({ title, menubar, top, external, panel }) {
+  const init = [];
+  if (menubar) {
+    init.push(
+      '  // Menu-bar app: no Dock icon (activation in tinyjs.json), the tray\n' +
+      '  // icon toggles the window, closing hides instead of quitting.\n' +
+      '  app.setHideOnClose(true);\n' +
+      "  // Tray icon: the project's own icon.png (fetched or picked), with its\n" +
+      '  // colors (template:false — pngs would otherwise be monochrome\n' +
+      '  // templates). Falls back to the globe symbol when there is none.\n' +
+      "  let trayIcon = 'sf:globe';\n" +
+      "  try { await tjs.stat('icon.png'); trayIcon = 'icon.png'; } catch { }\n" +
+      '  app.tray.set({ icon: trayIcon, template: false });');
+  }
+  if (top || panel) init.push('  app.setAlwaysOnTop(true);');
+  if (panel) init.push('  app.setResizable(false); // a dropdown panel is fixed-size');
+  let tray = '';
+  if (menubar && panel) {
+    tray = '\n// Tray click toggles the dropdown panel anchored under the icon; an' +
+      '\n// outside click defocuses it and it hides itself.\n' +
+      'let panelShown = false;\n' +
+      'const PANEL_W = 360, PANEL_H = 520;\n' +
+      'export async function onTray(id, app) {\n' +
+      '  if (panelShown) { panelShown = false; app.hide(); return; }\n' +
+      '  const t = await app.tray.position();\n' +
+      '  const x = t ? Math.max(8, Math.round(t.x + t.width / 2 - PANEL_W / 2)) : 40;\n' +
+      '  const y = t ? Math.round(t.y + t.height + 6) : 40;\n' +
+      '  app.setPosition(x, y);\n' +
+      '  app.setSize(PANEL_W, PANEL_H);\n' +
+      '  panelShown = true;\n' +
+      '  app.show(); // takes focus, so an outside click dismisses (onWindowState)\n' +
+      '}\n' +
+      'export function onWindowState(info, app) {\n' +
+      '  if (panelShown && info.focused === false) { panelShown = false; app.hide(); }\n' +
+      '}\n';
+  } else if (menubar) {
+    tray = '\n// Bare tray icon click: surface the window.\n' +
+      'export function onTray(id, app) {\n  app.show();\n}\n';
+  }
+  return `// Wrapper backend — the wrapped site IS the app. It gets no api functions
+// (tinyjs.json "api" gates the bridge by origin); these handlers just trace
+// navigation and downloads to the terminal so \`tinyjs dev\` shows what the
+// site does. Policy hooks: returning nothing allows, 'deny' blocks,
+// 'external' hands the url to the system browser.
+const EXTERNAL = ${JSON.stringify(external ?? [])}; // hostnames opened in the system browser
+${init.length ? 'export async function init(app) {\n' + init.join('\n\n') + '\n}\n' : ''}${tray}
+export function onNavigate(info) {
+  if (info.kind === 'policy' && EXTERNAL.length) {
+    try {
+      const host = new URL(info.url).hostname;
+      if (EXTERNAL.some((d) => host === d || host.endsWith('.' + d))) {
+        console.log('[nav] external', info.url);
+        return 'external';
+      }
+    } catch { }
+  }
+  console.log('[nav]', info.kind, info.url);
+}
+export function onDownload(info) {
+  console.log('[dl]', info.state, info.filename ?? info.url);
+}
+export function onWindowOpen(info) {
+  console.log('[popup]', info.mode ?? info.kind, info.url);
+}
+`;
+}
+
+const decodeEntities = (s) => s
+  .replaceAll(/&#(\d+);/g, (_, n) => String.fromCodePoint(+n))
+  .replaceAll(/&#x([0-9a-f]+);/gi, (_, n) => String.fromCodePoint(parseInt(n, 16)))
+  .replaceAll('&lt;', '<').replaceAll('&gt;', '>')
+  .replaceAll('&quot;', '"').replaceAll('&apos;', "'")
+  .replaceAll('&amp;', '&'); // last, so "&amp;lt;" becomes "&lt;" not "<"
+
+// Best icon a page advertises: apple-touch-icon (scored by sizes) > icon >
+// nothing (caller falls back to the template icon). mask-icon is a monochrome
+// glyph, deliberately scored down.
+function pickIcon(html, base) {
+  const cands = [];
+  for (const tag of html.match(/<link\b[^>]*>/gi) ?? []) {
+    const rel = (tag.match(/rel=["']([^"']+)["']/i)?.[1] ?? '').toLowerCase();
+    const href = tag.match(/href=["']([^"']+)["']/i)?.[1];
+    if (!href) continue;
+    let score = rel.includes('apple-touch-icon') ? 100 : rel.includes('icon') ? 50 : 0;
+    if (!score) continue;
+    if (rel.includes('mask-icon')) score -= 40;
+    score += Math.min(+(tag.match(/sizes=["'](\d+)x\d+/i)?.[1] ?? 0), 2048);
+    try { cands.push({ score, url: new URL(decodeEntities(href), base).href }); } catch { }
+  }
+  cands.sort((a, b) => b.score - a.score);
+  return cands[0]?.url ?? null;
+}
+
+// Modern favicons hide a real PNG inside an ICO wrapper (sips refuses the
+// container): parse the ICO directory, take the largest entry, keep it only
+// if it's a PNG — BMP entries fall back to the default icon.
+function icoPng(b) {
+  const count = b[4] | (b[5] << 8);
+  let best = null;
+  for (let i = 0; i < count; i++) {
+    const e = 6 + 16 * i;
+    const size = b[e + 8] | (b[e + 9] << 8) | (b[e + 10] << 16) | (b[e + 11] << 24);
+    const off = b[e + 12] | (b[e + 13] << 8) | (b[e + 14] << 16) | (b[e + 15] << 24);
+    const w = b[e] || 256, h = b[e + 1] || 256;
+    if (!best || w * h > best.w * best.h) best = { w, h, size, off };
+  }
+  if (!best) return null;
+  const img = b.subarray(best.off, best.off + best.size);
+  return img[0] === 0x89 && img[1] === 0x50 ? img : null;
+}
+
+// First 8 hex chars of a SHA-256 digest (generation stamps).
+const hex8 = (digest) => [...new Uint8Array(digest).slice(0, 4)]
+  .map((b) => b.toString(16).padStart(2, '0')).join('');
+
+// fetch with a hard timeout and a body cap: a slow or hostile site can
+// neither hang wrap nor feed it an unbounded body. Resolves null on timeout,
+// oversize, or any failure — callers treat that as "wrapped blind".
+async function fetchCapped(url, ua, { timeout, cap }) {
+  const ctl = new AbortController();
+  const timer = setTimeout(() => ctl.abort(), timeout);
+  try {
+    const res = await fetch(url, { headers: { 'user-agent': ua }, signal: ctl.signal });
+    if (!res.ok) return null;
+    const reader = res.body.getReader();
+    const chunks = [];
+    let total = 0;
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      chunks.push(value);
+      total += value.length;
+      if (total > cap) { try { await reader.cancel(); } catch { } return null; }
+    }
+    const out = new Uint8Array(total);
+    let off = 0;
+    for (const c of chunks) { out.set(c, off); off += c.length; }
+    return out;
+  } catch { return null; }
+  finally { clearTimeout(timer); }
+}
+
+// Icon bytes only if they really are an image (magic bytes, not content-type
+// — CDNs lie and error pages lie harder). 5 s timeout, 5 MB cap.
+async function fetchIcon(url, ua) {
+  if (!url) return null;
+  const b = await fetchCapped(url, ua, { timeout: 5000, cap: 5 * 1024 * 1024 });
+  if (!b) return null;
+  const is = (magic) => magic.every((byte, i) => b[i] === byte);
+  if (is([0x89, 0x50]) || is([0xff, 0xd8]) ||
+      (is([0x52, 0x49, 0x46, 0x46]) && b[8] === 0x57 && b[9] === 0x45)) return b; // png jpg webp
+  if (is([0x00, 0x00, 0x01, 0x00])) return icoPng(b); // ICO container
+  return null;
+}
+
+// ---- the public suffix list (PSL) ----
+// Decides where a wildcard may stop: the registrable domain (etld+1), so a
+// wrap of bbc.co.uk may offer *.bbc.co.uk but never *.co.uk, and a hosting-
+// suffix tenant (sam.github.io) stays exact. Fetched at wrap time and cached
+// ~30 days; with no list and no cache, wrap keeps the exact origin only.
+
+const PSL_URL = 'https://publicsuffix.org/list/public_suffix_list.dat';
+
+function parsePsl(dat) {
+  const rules = new Set(), wild = new Set(), except = new Set(), priv = new Set();
+  let privateSection = false;
+  for (const raw of dat.split('\n')) {
+    const line = raw.trim().toLowerCase();
+    if (!line) continue;
+    // The section markers live INSIDE comments in the real list — check for
+    // them before the generic comment strip below.
+    if (line.includes('===begin private domains')) { privateSection = true; continue; }
+    if (line.includes('===end private domains')) { privateSection = false; continue; }
+    if (line.startsWith('//')) continue;
+    if (line.startsWith('!')) { const e = line.slice(1); except.add(e); if (privateSection) priv.add('!' + e); }
+    else if (line.startsWith('*.')) { const e = line.slice(2); wild.add(e); if (privateSection) priv.add('*.' + e); }
+    else { rules.add(line); if (privateSection) priv.add(line); }
+  }
+  return { rules, wild, except, priv };
+}
+
+// The prevailing rule for host: exceptions first (!x points one label down),
+// then the LONGEST exact match, then a wildcard (*.x matches one label above
+// x), the longer beating the shorter; no match at all → the TLD itself (the
+// implicit * rule). priv = the match came from the PRIVATE section (hosting
+// suffixes like github.io, where a tenant doesn't own the zone above it).
+function publicSuffixOf(host, psl) {
+  const labels = host.split('.');
+  for (let i = 0; i < labels.length; i++) {
+    const cand = labels.slice(i).join('.');
+    if (psl.except.has(cand))
+      return { ps: cand.split('.').slice(1).join('.'), priv: psl.priv.has('!' + cand) };
+  }
+  let best = null;
+  for (let i = 0; i < labels.length; i++) {
+    const cand = labels.slice(i).join('.');
+    if (psl.rules.has(cand)) { best = { ps: cand, priv: psl.priv.has(cand) }; break; }
+  }
+  for (let i = 0; i + 1 < labels.length; i++) {
+    if (psl.wild.has(labels.slice(i + 1).join('.'))) {
+      const w = labels.slice(i).join('.');
+      if (!best || w.split('.').length > best.ps.split('.').length)
+        best = { ps: w, priv: psl.priv.has('*.' + labels.slice(i + 1).join('.')) };
+      break;
+    }
+  }
+  return best ?? { ps: labels[labels.length - 1], priv: false };
+}
+
+// etld+1, plus tenant=true when a wildcard would trust a zone we cannot
+// attribute to the caller: the host IS a public suffix, or sits directly on
+// a PRIVATE one (sam.github.io — the tenant doesn't own the zone above it;
+// bbc.co.uk under the ICANN co.uk does, so *.bbc.co.uk is offered).
+function registrableDomain(host, psl) {
+  const { ps, priv } = publicSuffixOf(host, psl);
+  if (!ps || host === ps) return { reg: null, tenant: true };
+  const reg = host.slice(0, host.length - ps.length - 1).split('.').pop() + '.' + ps;
+  return { reg, tenant: reg === host && priv };
+}
+
+async function loadPsl() {
+  const home = tjs.env.HOME || tjs.env.USERPROFILE || '';
+  const base = IS_WIN ? (tjs.env.LOCALAPPDATA || home + '\\AppData\\Local') + '\\tinyjs'
+    : IS_LINUX ? (tjs.env.XDG_CACHE_HOME || home + '/.cache') + '/tinyjs'
+    : home + '/Library/Caches/tinyjs';
+  const path = base + '/public-suffix-list.dat';
+  let dat = null;
+  try {
+    const st = await tjs.stat(path);
+    if (Date.now() - st.mtim.getTime() < 30 * 86400 * 1000) dat = dec.decode(await tjs.readFile(path));
+  } catch { }
+  if (dat === null) {
+    const b = await fetchCapped(PSL_URL, 'tinyjs-wrap', { timeout: 15000, cap: 2 * 1024 * 1024 });
+    if (b) {
+      dat = dec.decode(b);
+      try { await tjs.makeDir(base, { recursive: true }); await tjs.writeFile(path, b); } catch { }
+    } else {
+      try { dat = dec.decode(await tjs.readFile(path)); console.log('==> public suffix list unreachable — using the cached copy'); }
+      catch { console.log('==> public suffix list unreachable — wrapping without one (exact origins only)'); return null; }
+    }
+  }
+  return parsePsl(dat);
+}
+
+async function cmdWrap() {
+  if (!args[0] || args[0].startsWith('--')) {
+    fail('usage: tinyjs wrap <url> [dir] [--name <name>] [--ua <userAgent>] [--menubar] [--panel] [--top] [--external a.com,b.com] [--origins exact|subdomains|url,…] [--yes] [--force]');
+  }
+  const url = /^https?:\/\//.test(args[0]) ? args[0] : 'https://' + args[0];
+  let base;
+  try { base = new URL(url); } catch { fail(`not a url: ${args[0]}`); }
+  if (base.protocol !== 'https:' && base.protocol !== 'http:') fail(`not a website url: ${args[0]}`);
+  const host = base.hostname;
+
+  // --flag value and --flag=value both work (the old .replace(/^=/, '') ran
+  // against the FOLLOWING arg, so --name=Foo silently did nothing).
+  const argVal = (flag) => {
+    const eq = args.find((a) => a.startsWith(flag + '='));
+    if (eq !== undefined) return eq.slice(flag.length + 1) || null;
+    const i = args.indexOf(flag);
+    return i === -1 ? null : (args[i + 1] ?? '') || null;
+  };
+  const name = (argVal('--name') || host.replace(/^www\./, ''))
+    .replace(/[^a-zA-Z0-9.-]/g, '').replace(/\./g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '');
+  const dir = args[1] && !args[1].startsWith('--') ? args[1] : name;
+  const force = args.includes('--force');
+  if (!name) fail(`cannot derive an app name from ${host} — pass --name`);
+  const regen = force && await exists(dir + '/tinyjs.json');
+  if (await exists(dir)) {
+    // --force regenerates an existing wrapped project in place: it overwrites
+    // ONLY the files this generator owns (tinyjs.json, src/main.js, icon.png)
+    // and leaves the user's own edits, added files and .git alone.
+    if (!regen) fail(`'${dir}' already exists (--force overwrites a tinyjs project)`);
+    console.log(`==> overwriting ${dir} (generated files only)`);
+  }
+  const ua = argVal('--ua');
+  // The probe fetches as a plain Safari; a browser-ish UA keeps CDNs and
+  // bot-walls from serving garbage. Only a --ua the user passes reaches the
+  // app itself (Windows WebView2 serving Safari-flavored pages would be a
+  // downgrade, not a fix).
+  const probeUA = ua ||
+    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Safari/605.1.15';
+
+  // Title + icon are best-effort: an unreachable site still wraps, with a
+  // default title and the template icon. Timeout + body cap so a slow or
+  // hostile site can't hang wrap or feed it an unbounded page.
+  console.log(`==> fetching ${base.href}`);
+  let title = null, iconUrl = null;
+  const page = await fetchCapped(base.href, probeUA, { timeout: 10000, cap: 2 * 1024 * 1024 });
+  if (page !== null) {
+    const html = dec.decode(page);
+    const raw = decodeEntities((html.match(/<title[^>]*>([\s\S]*?)<\/title>/i)?.[1] ?? '').trim())
+      .replace(/\s+/g, ' ');
+    title = raw.length > 44 ? raw.slice(0, 44).replace(/\s+\S*$/, '') + '…' : raw || null;
+    iconUrl = pickIcon(html, base);
+  }
+
+  // ---- the API gate: exact origin by default, subdomains opt-in ----
+  // The gate matches the page's ACTUAL origin — protocol and port included
+  // (a wrapped http://127.0.0.1:8123 stamps "http://127.0.0.1:8123", which a
+  // hardcoded "https://" key never matches). Wildcards are opt-in and never
+  // cross a public suffix: the PSL decides where the registrable domain ends
+  // (bbc.co.uk may widen to *.bbc.co.uk; sam.github.io, a tenant on a
+  // hosting suffix, and every IP or http origin stay exact). No list and no
+  // cache → exact only, the fail-closed side.
+  const labels = host.replace(/^www\./, '').split('.').filter((s) => /^[a-zA-Z0-9-]+$/.test(s));
+  const isIP = /^(?:\d{1,3}\.){3}\d{1,3}$/.test(host) || host.includes(':');
+  const isTTY = (() => { try { return !!(tjs.stdin.isTerminal?.() ?? tjs.stdin.isTTY); } catch { return false; } })();
+  const yes = args.includes('--yes');
+  const originsFlag = argVal('--origins');
+  const psl = isIP || base.protocol !== 'https:' ? null : await loadPsl();
+  const widen = psl ? registrableDomain(host.replace(/^www\./, ''), psl)
+                    : { reg: null, tenant: true };
+  const wildcardOrigin = widen.reg && !widen.tenant ? `https://*.${widen.reg}` : null;
+  const regOrigin = widen.reg ? `https://${widen.reg}` : null;
+
+  let origins = { [base.origin]: 'wrapper' };
+  let gateNote = base.protocol !== 'https:' ? 'http origin — exact only'
+    : isIP ? 'IP host — exact only'
+    : widen.reg === null ? `${host} sits on a public suffix — exact only`
+    : widen.tenant ? `${host} sits directly on a hosting suffix — exact only`
+    : null;
+  const addWildcard = () => {
+    origins[wildcardOrigin] = 'wrapper';
+    if (regOrigin && !(regOrigin in origins)) origins[regOrigin] = 'wrapper';
+    gateNote = null;
+  };
+  if (originsFlag !== null) {
+    if (originsFlag === 'subdomains') {
+      if (wildcardOrigin) addWildcard();
+      else console.log(`==> note: no wildcard available (${gateNote})`);
+    } else if (originsFlag !== 'exact') {
+      let ignored = 0;
+      for (const entry of originsFlag.split(',').map((s) => s.trim()).filter(Boolean)) {
+        try {
+          const u = new URL(entry);
+          if (u.protocol !== 'https:' && u.protocol !== 'http:') throw 0;
+          origins[u.origin] = 'wrapper';
+        } catch { ignored++; console.log(`==> note: ignoring unparseable --origins entry: ${entry}`); }
+      }
+      gateNote = ignored ? 'explicit --origins list (some entries ignored)' : 'explicit --origins list';
+    }
+  } else if (!yes && isTTY && wildcardOrigin) {
+    console.log('\nAPI access for this app:');
+    console.log(`  [1] ${base.origin} only (recommended)`);
+    console.log(`  [2] + subdomains:  ${wildcardOrigin}`);
+    await tjs.stdout.write(enc.encode('choose [1/2, enter = 1]: '));
+    const buf = new Uint8Array(32);
+    const n = await tjs.stdin.read(buf);
+    if (dec.decode(buf.subarray(0, n)).trim() === '2') addWildcard();
+  } else if (!yes && !isTTY && originsFlag === null && wildcardOrigin) {
+    console.log(`==> note: non-interactive — exact origin only (pass --origins subdomains for ${wildcardOrigin})`);
+  }
+
+  const cfg = {
+    name,
+    title: title ?? name,
+    size: '1280x800',
+    id: isIP
+      ? 'ip-' + host.replace(/[^a-zA-Z0-9]+/g, '-').replace(/^-+|-+$/g, '') + '.wrap'
+      : labels.slice().reverse().join('.').toLowerCase() + '.wrap',
+    version: '0.1.0',
+    icon: 'icon.png',
+    url: base.href,
+    // Window chrome lives in the TOP-LEVEL lists, not in the runtime's
+    // API_ALWAYS: an origin that matches no key (a redirect target like
+    // consent.google.com) falls through to them, so a wrapped page keeps
+    // close/minimize/zoom/drag on any origin it lands on while every other
+    // capability stays closed. Per-app and visible in the manifest — the
+    // gate policy no longer changes for every tinyjs app (#20 review).
+    api: {
+      disable: ['*'],
+      enable: ['win.close', 'win.minimize', 'win.zoom', 'win.startDrag'],
+      origins,
+    },
+    popups: 'window',   // OAuth popups keep window.opener/postMessage
+    downloads: 'ask',
+  };
+  if (ua) cfg.userAgent = ua;
+  const menubar = args.includes('--menubar');
+  if (args.includes('--panel') && !menubar)
+    console.log("==> note: --panel needs --menubar (a panel lives in the tray) — ignoring --panel");
+  const panel = args.includes('--panel') && menubar; // a panel lives in the tray
+  const top = args.includes('--top');
+  const external = (argVal('--external') ?? '')
+    .split(',').map((s) => s.trim().toLowerCase()).filter((s) => s && !s.includes('/'));
+  if (menubar) cfg.activation = 'accessory';
+  if (panel) cfg.chrome = { ...(cfg.chrome ?? {}), frame: false, windowControls: false };
+  // (Studio form state used to persist here as a "studio" key — tinyjs.json
+  // only carries what the runtime or CLI reads; Studio keeps its own file.)
+  const stamp = await toolVersion();
+  if (parseVer(stamp)) cfg.minTinyjsVersion = String(stamp).replace(/^v/, '');
+
+  // The generated backend is stamped with the hash of its own body, so a
+  // later --force can warn when src/main.js was edited since generation.
+  const mainSrc = wrapperMain({ title: cfg.title, menubar, top, external, panel });
+  const mainHash = hex8(await crypto.subtle.digest('SHA-256', enc.encode(mainSrc)));
+  if (regen && await exists(dir + '/src/main.js')) {
+    // The stamp records the hash of the generated body; re-hash the file's
+    // own body and compare against it — an edit since generation (or an
+    // unstamped older file) warns before --force overwrites it.
+    const prev = dec.decode(await tjs.readFile(dir + '/src/main.js'));
+    const m = prev.match(/^\/\/ generated by tinyjs wrap \(([0-9a-f]{8})\)\n([\s\S]*)$/);
+    const intact = m && hex8(await crypto.subtle.digest('SHA-256', enc.encode(m[2]))) === m[1];
+    if (!intact)
+      console.log('==> note: src/main.js changed since it was generated — --force overwrites it');
+  }
+  await tjs.makeDir(dir + '/src', { recursive: true });
+  await tjs.writeFile(dir + '/tinyjs.json', enc.encode(JSON.stringify(cfg, null, 2) + '\n'));
+  await tjs.writeFile(dir + '/src/main.js',
+    enc.encode(`// generated by tinyjs wrap (${mainHash})\n` + mainSrc));
+  let iconSrc = iconUrl;
+  let icon = await fetchIcon(iconSrc, probeUA);
+  if (!icon) {
+    iconSrc = new URL('/favicon.ico', base).href; // the /favicon.ico convention
+    icon = await fetchIcon(iconSrc, probeUA);
+  }
+  // A --force re-wrap that finds no icon keeps the one already on disk —
+  // overwriting a good icon with the template would be a downgrade.
+  const hadIcon = regen && await exists(dir + '/icon.png');
+  if (icon || !hadIcon)
+    await tjs.writeFile(dir + '/icon.png', icon ?? await tjs.readFile(TOOL_DIR + 'template/icon.png'));
+  // Apple icon grid: fetched favicons are full-bleed, so the dock/menu-bar
+  // icon renders oversized next to system apps. Pad to ~82% content on a
+  // transparent 1024 canvas (JXA + Cocoa, macOS only — other platforms
+  // keep the raw icon; their icon pipelines inset differently).
+  if (!IS_WIN && !IS_LINUX && icon) {
+    try {
+      await runCapture(['osascript', '-l', 'JavaScript',
+        TOOL_DIR + 'native/pad-icon.jxa', dir + '/icon.png']);
+      // the Cocoa pass renders at the source's scale (can be 2048) — pin to 1024
+      await run(['sips', '-z', '1024', '1024', dir + '/icon.png'], { stdout: 'ignore', stderr: 'ignore' });
+      console.log('==> icon padded to the Apple grid');
+    } catch { /* keep the raw icon */ }
+  }
+
+  const extra = Object.keys(origins).filter((k) => k !== base.origin);
+  console.log(`created ${dir}/
+  title:  ${cfg.title}
+  icon:   ${icon ? iconSrc : 'default — nothing usable advertised or at /favicon.ico'}
+  gate:   ${base.origin}${extra.length ? ' + ' + extra.join(' + ') : ' (exact only)'} → wrapper preset
+          ${gateNote ? gateNote + ' · ' : ''}every other origin → window chrome only
+          (win.close/minimize/zoom/startDrag)
+
+  cd ${dir}
+  tinyjs dev      # run it
+  tinyjs build    # package it`);
+}
+
 // Dev-checkout convenience (Windows + Linux): if the native launcher sources
 // (or the injected client, which is compiled into it) are newer than the
 // built launcher, rebuild via setup.ps1 / setup.sh before starting — so
@@ -1622,6 +2079,7 @@ if (['new', 'dev', 'build', 'publish', 'notarize'].includes(cmd)) warnIfIntelMac
 
 switch (cmd) {
   case 'new': await cmdNew(); break;
+  case 'wrap': await cmdWrap(); break;
   case 'dev': await cmdDev(); break;
   case 'build': await cmdBuild(); break;
   case 'publish': await cmdPublish(); break;
@@ -1636,6 +2094,13 @@ usage:
   tinyjs new <dir>    scaffold a new app (zero dependencies)
                         --template react-ts|vue-ts|solid-ts|svelte-ts|vanilla-ts|…
                         scaffolds create-vite + tinyjs overlay instead
+  tinyjs wrap <url>   wrap a website into a desktop app (site wrapper:
+                      gated API, downloads, popup policy) — [dir],
+                      --name <name>, --ua <userAgent>, --menubar,
+                      --panel (needs --menubar), --top,
+                      --external a.com,b.com, --force,
+                      --origins exact|subdomains|url,… (default: exact),
+                      --yes (skip the origins prompt)
   tinyjs dev          run the app in the current directory
   tinyjs build        build dist/<name> and dist/<Name>.app (--dmg: also a disk image;
                       --arch arm64|x86_64: macOS .app for that CPU, from any Mac;
