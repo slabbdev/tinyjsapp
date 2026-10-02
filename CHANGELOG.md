@@ -4,7 +4,7 @@ All notable changes to tinyjs. Versions are git tags (`vX.Y.Z`); a tag push
 builds and publishes the release. The rendered version of this file lives at
 https://tinyjs.app/changelog.
 
-## Unreleased
+## 0.43.0 — 2026-10-02
 
 Security fixes. Thanks to [@slabbdev](https://github.com/slabbdev) for the
 reports, each with a runtime repro
@@ -19,12 +19,13 @@ reports, each with a runtime repro
   names the app and not the site. On Linux the `"permissions"` block
   entitled every page in the app. Now the app's own `file://` pages (and the
   dev server in `tinyjs dev`) are granted as before; any other origin gets
-  WebKit's prompt naming that site on macOS and is refused on Linux. An app
-  can trust a site explicitly with an `"api"` `origins` key that allows
-  `media.microphone` / `media.camera`, e.g.
-  `"https://meet.example.com": ["media.*", "notify"]`. Presets and top-level
-  lists never grant it. Windows is unchanged: WebView2 already asks per
-  site.
+  WebKit's own permission prompt on macOS (for a third-party iframe inside
+  the app's page, that prompt names the app, not the iframe's site) and is
+  refused on Linux. An app can trust a site explicitly with an `"api"`
+  `origins` key that allows `media.microphone` / `media.camera`, e.g.
+  `"https://meet.example.com": ["media.*", "notify"]`. Presets and
+  top-level lists never grant it. Windows is unchanged: WebView2 already
+  asks per site.
 - **`tiny.fetch` no longer puts request headers on curl's command line.**
   curl is only in the picture as a stopgap: txiki.js 26.6.0's own fetch
   sends a root-path URL as `GET //` and can't complete a handshake with

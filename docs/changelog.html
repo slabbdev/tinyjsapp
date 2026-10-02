@@ -171,6 +171,17 @@
   <section>
 
     <div class="rel">
+      <h2>0.43.0 <span class="date">2026-10-02</span></h2>
+      <p>Security fixes. Thanks to <a href="https://github.com/slabbdev">@slabbdev</a> for the reports, each with a runtime repro (<a href="https://github.com/tarwin/tinyjsapp/issues/24">#24</a>, <a href="https://github.com/tarwin/tinyjsapp/issues/27">#27</a>, <a href="https://github.com/tarwin/tinyjsapp/issues/28">#28</a>).</p>
+      <ul>
+        <li><b>Only the app's own pages get the microphone and camera without asking.</b> On macOS the launcher granted every <code>getUserMedia</code> request, so in a site wrapper the wrapped site, any page it redirected to, or a third-party iframe got the device with only the one system prompt, which names the app and not the site. On Linux the <code>"permissions"</code> block entitled every page in the app. Now the app's own <code>file://</code> pages (and the dev server in <code>tinyjs dev</code>) are granted as before; any other origin gets WebKit's own permission prompt on macOS (for a third-party iframe inside the app's page, that prompt names the app, not the iframe's site) and is refused on Linux. An app can trust a site explicitly with an <code>"api"</code> <code>origins</code> key that allows <code>media.microphone</code> / <code>media.camera</code>, e.g. <code>"https://meet.example.com": ["media.*", "notify"]</code>. Presets and top-level lists never grant it. Windows is unchanged: WebView2 already asks per site.</li>
+        <li><b><code>tiny.fetch</code> no longer puts request headers on curl's command line.</b> curl is only in the picture as a stopgap: txiki.js 26.6.0's own fetch sends a root-path URL as <code>GET //</code> and can't complete a handshake with TLS 1.2-only servers, so until fixed txiki releases ship, those two kinds of request go through the system curl instead. On those requests, headers such as <code>Authorization</code> and <code>Cookie</code> were readable by any local user with <code>ps</code> while the request ran. They now go through a temp file in a folder only the current user can open, deleted when curl exits. Every other request never touched curl.</li>
+        <li><b><code>tiny.fetch</code> drops credentials on cross-origin redirects.</b> <code>Authorization</code>, <code>Cookie</code> and <code>Proxy-Authorization</code> were sent again to whatever origin a redirect pointed at. They're now dropped when a redirect changes origin, as browsers do, and a redirect that turns a POST into a GET also drops the body's <code>Content-*</code> headers.</li>
+        <li><b><code>tiny.audio.sampler.load</code> only accepts audio files.</b> A page could load any path and read the file back through the internal <code>sampler.bytes</code> call, so any page in an app without an <code>"api"</code> gate could read any file the user can. <code>load</code> now refuses a path unless it has an audio extension and starts like an audio file (WAV, AIFF, CAF, Ogg, FLAC, MP3/AAC, M4A/MP4, WebM). The contents check alone let UTF-16 text files and HEIC photos through. <code>sampler.bytes</code> answers only the main window on macOS and Windows.</li>
+      </ul>
+    </div>
+
+    <div class="rel">
       <h2>0.42.3 <span class="date">2026-09-29</span></h2>
       <p>Security fix. Thanks to <a href="https://github.com/slabbdev">@slabbdev</a> for the report, which came with a repro (<a href="https://github.com/tarwin/tinyjsapp/issues/22">#22</a>), and the fix (<a href="https://github.com/tarwin/tinyjsapp/pull/23">#23</a>).</p>
       <ul>
