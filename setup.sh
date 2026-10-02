@@ -6,6 +6,11 @@
 set -e
 cd "$(dirname "$0")"
 
+# One private scratch dir for downloads and builds (mktemp -d is 0700 with an
+# unguessable name; /tmp/foo-$$ paths can be pre-planted by another local user).
+TMPD="$(mktemp -d)"
+trap 'rm -rf "$TMPD"' EXIT
+
 TJS_VERSION="${TJS_VERSION:-v26.6.0}"
 REPO="tarwin/tinyjsapp"
 
@@ -60,8 +65,8 @@ if [ "$OS" = "Linux" ]; then
         TJS_URL="https://github.com/$REPO/releases/download/$TJS_REL/tjs-linux-$TJS_ARCH.gz"
       fi
       echo "==> downloading tjs (linux-$TJS_ARCH) from $REPO releases"
-      if curl -fsSL -o /tmp/tjs-$$.gz "$TJS_URL" 2>/dev/null; then
-        gunzip -c /tmp/tjs-$$.gz > bin/tjs && rm -f /tmp/tjs-$$.gz && GOT=1
+      if curl -fsSL -o "$TMPD/tjs.gz" "$TJS_URL" 2>/dev/null; then
+        gunzip -c "$TMPD/tjs.gz" > bin/tjs && GOT=1
       else
         echo "    (no prebuilt tjs in the latest release — building from source)"
       fi
@@ -69,22 +74,20 @@ if [ "$OS" = "Linux" ]; then
     if [ -z "$GOT" ]; then
       command -v cmake >/dev/null || { echo "building txiki.js needs cmake ($CMAKE_HINT)" >&2; exit 1; }
       echo "==> building txiki.js $TJS_VERSION from source (a few minutes)"
-      rm -rf /tmp/txiki-src-$$
       git clone --depth 1 --branch "$TJS_VERSION" --recurse-submodules --shallow-submodules -j4 \
-        https://github.com/saghul/txiki.js /tmp/txiki-src-$$
+        https://github.com/saghul/txiki.js "$TMPD/txiki-src"
       # txiki uses #pragma region folding markers and builds -Werror; GCC 12
       # (Ubuntu 22.04's newest — release builds pin 22.04 for the glibc
       # floor) doesn't know that pragma and errors out. They're editor
       # decoration — stripping them changes nothing. Swept, not listed per
       # file, so a new one upstream can't resurface the break. No-op for
       # GCC 13+/clang, so it runs unconditionally.
-      grep -rl '#pragma region' /tmp/txiki-src-$$ --include='*.c' --include='*.h' --include='*.cc' --include='*.cpp' 2>/dev/null \
+      grep -rl '#pragma region' "$TMPD/txiki-src" --include='*.c' --include='*.h' --include='*.cc' --include='*.cpp' 2>/dev/null \
         | xargs -r sed -i 's/^[[:space:]]*#pragma[[:space:]]\{1,\}\(end\)\{0,1\}region.*$//'
       GEN="Unix Makefiles"; command -v ninja >/dev/null && GEN=Ninja
-      cmake -S /tmp/txiki-src-$$ -B /tmp/txiki-src-$$/build -DCMAKE_BUILD_TYPE=Release -G "$GEN"
-      cmake --build /tmp/txiki-src-$$/build --target tjs -j"$(nproc)"
-      cp /tmp/txiki-src-$$/build/tjs bin/tjs
-      rm -rf /tmp/txiki-src-$$
+      cmake -S "$TMPD/txiki-src" -B "$TMPD/txiki-src/build" -DCMAKE_BUILD_TYPE=Release -G "$GEN"
+      cmake --build "$TMPD/txiki-src/build" --target tjs -j"$(nproc)"
+      cp "$TMPD/txiki-src/build/tjs" bin/tjs
     fi
     chmod +x bin/tjs
   fi
@@ -136,11 +139,10 @@ fi
 if [ ! -x bin/tjs ]; then
   echo "==> downloading txiki.js $TJS_VERSION ($TJS_ARCH)"
   mkdir -p bin
-  curl -fsSL -o /tmp/txiki-$$.zip \
+  curl -fsSL -o "$TMPD/txiki.zip" \
     "https://github.com/saghul/txiki.js/releases/download/$TJS_VERSION/txiki-macos-$TJS_ARCH.zip"
-  unzip -q -o /tmp/txiki-$$.zip -d /tmp/txiki-$$
-  mv "/tmp/txiki-$$/txiki-macos-$TJS_ARCH/tjs" bin/tjs
-  rm -rf /tmp/txiki-$$ /tmp/txiki-$$.zip
+  unzip -q -o "$TMPD/txiki.zip" -d "$TMPD/txiki"
+  mv "$TMPD/txiki/txiki-macos-$TJS_ARCH/tjs" bin/tjs
   chmod +x bin/tjs
 fi
 
@@ -179,8 +181,8 @@ fi
 # and lipo'd, since swiftc takes a single -target (see below).
 ARCHS="$TJS_ARCH"
 [ "${TINYJS_UNIVERSAL:-0}" = "1" ] && ARCHS="arm64 x86_64"
-BUILD_TMP="$(mktemp -d)"
-trap 'rm -rf "$BUILD_TMP"' EXIT
+BUILD_TMP="$TMPD/build"
+mkdir "$BUILD_TMP"
 if [ "$AI_BUILD" = "1" ]; then
   echo "==> compiling with on-device AI (FoundationModels found in the SDK)"
 else
