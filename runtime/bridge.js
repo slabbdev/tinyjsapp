@@ -16,7 +16,7 @@
 //                                                     answers the call itself
 //                         QUIT                        close the window
 
-import { bundlePath, checkForUpdate, installUpdate, relaunch } from './update.js';
+import { bundlePath, checkForUpdate, installUpdate, relaunch, RELAUNCH_FLAG } from './update.js';
 
 const enc = new TextEncoder();
 const dec = new TextDecoder();
@@ -409,8 +409,11 @@ const REQUIREMENTS = {
     detail: 'The tray needs an AppIndicator/StatusNotifier host. GNOME needs the '
       + 'AppIndicator shell extension; most other desktops have one built in.',
     probe: async () => !!(await busNameOwned('org.kde.StatusNotifierWatcher')),
+    // openSUSE ships no tray-host package in its default repos (GNOME users
+    // get the AppIndicator extension from extensions.gnome.org), so zypper
+    // gets no install line rather than one zypper cannot satisfy.
     packages: { apt: ['gnome-shell-extension-appindicator'], dnf: ['gnome-shell-extension-appindicator'],
-                pacman: ['libappindicator-gtk3'], zypper: ['gnome-shell-extension-appindicator'] },
+                pacman: ['libappindicator-gtk3'] },
   },
   'windowPosition': {
     feature: 'placing your own windows (setPosition / center)',
@@ -1193,7 +1196,20 @@ export async function createApp({ html, htmlPath, url = null, title = 'tinyjs', 
       spawnEnv.WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS = extra;
     }
     const spawnOpts = { stderr: 'inherit', env: spawnEnv };
-    proc = tjs.spawn([launcher, pagePath, sockPath, title, size, version], spawnOpts);
+    // macOS: a bare (non-bundled) binary takes its OS-facing app name — menu
+    // bar, cmd-tab — from the executable's file name. In dev that reads
+    // "launcher". Exec through a symlink named after the app instead, so the
+    // real title shows everywhere the OS names the app; bundled .apps carry
+    // CFBundleName and never take this path.
+    let launcherExe = launcher;
+    if (!IS_WIN && !IS_LINUX && title) {
+      const link = workDir + '/' + (String(title).replace(/[/\\:]+/g, '') || 'launcher');
+      try {
+        await tjs.symlink(launcher, link);
+        launcherExe = link;
+      } catch { }                     // fall back to the plain launcher
+    }
+    proc = tjs.spawn([launcherExe, pagePath, sockPath, title, size, version], spawnOpts);
 
     cleanup = async () => {
       if (!IS_WIN) await tjs.remove(sockPath).catch(() => {}); // pipes aren't files
@@ -3026,6 +3042,23 @@ export async function createApp({ html, htmlPath, url = null, title = 'tinyjs', 
       ? '\\\\.\\pipe\\tinyjs-app-' + (id || 'tinyjs-app')
       : await linuxInstanceSock(id || 'tinyjs-app');
     let haveInstancePipe = false;
+    // Relaunched by an update: the instance that spawned us still owns the
+    // pipe until it finishes quitting, and handing off to it would leave no
+    // app running at all. Poll (connect, then hang up without a message —
+    // the owner ignores an empty connection) until it lets go. Each probe is
+    // capped: a pipe whose owner is mid-exit can make connect wait 30 s
+    // (measured, libuv's WaitNamedPipe). Past the deadline the old one is
+    // stuck, and the ordinary hand-off below at least activates it.
+    if (instPipe && tjs.args.includes(RELAUNCH_FLAG)) {
+      const deadline = Date.now() + 5000;
+      while (Date.now() < deadline) {
+        const probe = tjs.connect('pipe', instPipe)
+          .then(async (c) => { await c.opened; c.close(); return true; }, () => false);
+        const owned = await Promise.race([probe, new Promise((r) => setTimeout(() => r(true), 500))]);
+        if (!owned) break;
+        await new Promise((r) => setTimeout(r, 50));
+      }
+    }
     if (instPipe) try {
       const conn = await tjs.connect('pipe', instPipe);
       const { writable } = await conn.opened;

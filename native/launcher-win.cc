@@ -7705,9 +7705,40 @@ static int run_hidden() {
   return (int)code;
 }
 
+// `launcher-win.exe --spawn <exe> [args...]` — start a process that outlives
+// the caller, and return at once. libuv puts every tjs.spawn child in a
+// KILL_ON_JOB_CLOSE job (txiki exposes no detached flag), so a child the
+// backend starts dies when the backend exits — fatal for the post-update
+// relaunch, which is spawned by the instance that's about to quit. That job
+// allows silent breakaway, so OUR child (the backend's grandchild) lands
+// outside it; no job of our own, no wait, no inherited handles.
+static int spawn_detached() {
+  int wargc = 0;
+  LPWSTR *wargv = CommandLineToArgvW(GetCommandLineW(), &wargc);
+  if (!wargv || wargc < 3)
+    return 127;
+  std::wstring cmd;
+  for (int i = 2; i < wargc; i++) {
+    if (i > 2) cmd += L' ';
+    cmd += quote_arg(wargv[i]);
+  }
+  STARTUPINFOW si = {sizeof(si)};
+  PROCESS_INFORMATION pi = {};
+  std::vector<wchar_t> buf(cmd.begin(), cmd.end());
+  buf.push_back(0);
+  if (!CreateProcessW(nullptr, buf.data(), nullptr, nullptr, FALSE,
+                      CREATE_NEW_PROCESS_GROUP, nullptr, nullptr, &si, &pi))
+    return 1;
+  CloseHandle(pi.hThread);
+  CloseHandle(pi.hProcess);
+  return 0;
+}
+
 static int run(int argc, char **argv) {
   if (argc == 4 && strcmp(argv[1], "--embed-icon") == 0)
     return embed_icon(argv[2], argv[3]);
+  if (argc >= 3 && strcmp(argv[1], "--spawn") == 0)
+    return spawn_detached();
   if (argc >= 3 && strcmp(argv[1], "--run") == 0)
     return run_hidden();
   if (argc >= 4 && strcmp(argv[1], "--open") == 0)

@@ -18,6 +18,10 @@ pushed to `origin`. `git checkout feat/linux` after cloning/pulling.
 sudo apt install build-essential pkg-config libgtk-3-dev \
      libwebkit2gtk-4.1-dev libayatana-appindicator3-dev \
      cmake ninja-build           # cmake/ninja only if tjs must build from source
+# openSUSE Tumbleweed — webkitgtk3-devel is the WebKitGTK 4.1 dev package
+sudo zypper install gcc-c++ make pkgconf-pkg-config gtk3-devel \
+     webkitgtk3-devel libayatana-appindicator3-devel \
+     cmake ninja
 ./setup.sh                       # fetches a prebuilt tjs OR builds txiki.js; compiles the launcher
 ```
 `setup.sh` on Linux: downloads a prebuilt `tjs` from the tinyjsapp releases

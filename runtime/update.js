@@ -343,36 +343,104 @@ async function copyTree(src, dst) {
 }
 
 // Windows in-place update: recursively move src's files over dst. Existing
-// files are deleted, or — when locked (running exes) — renamed aside as
-// .update-old. Cross-volume renames fall back to a copy.
-async function winSwapDir(src, dst) {
+// files are renamed aside as .update-old (never deleted outright — the aside
+// is what makes a mid-swap failure fully reversible) and the new files
+// dropped in. Cross-volume renames fall back to a copy.
+//
+// A failure partway through (a lock the retries below can't clear) must not
+// leave a half-old half-new install: the walk journals every file it touches
+// and the wrapper rolls the journal back, so the current version stays
+// intact and one clear error surfaces.
+
+// Windows: a freshly-written or just-closed file can be transiently locked
+// by Defender / the indexer, failing the rename with EPERM even with a
+// single writer — retry briefly before giving up (same posture as the
+// store's rename retry in bridge.js). Only lock-shaped errors retry: a
+// cross-volume rename (EXDEV) must fall through to the copy at once, or
+// every file of an app installed off the temp dir's drive pays the full
+// backoff.
+const LOCK_CODES = new Set(['EPERM', 'EBUSY', 'EACCES']);
+async function retryLocked(fn) {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await fn();
+    } catch (e) {
+      if (attempt >= 5 || !LOCK_CODES.has(e?.code)) throw e;
+      await new Promise((r) => setTimeout(r, 25 * (attempt + 1)));
+    }
+  }
+}
+
+// journal entry: { d, aside, placed } — aside is where the displaced old
+// file waits (null when the new file is a pure addition); placed once the
+// new file has landed at d.
+async function winSwapWalk(src, dst, journal) {
   await tjs.makeDir(dst, { recursive: true }).catch(() => {});
   // Sweep leftovers from the previous update first (unlocked by now).
   const sweep = await tjs.readDir(dst);
   for await (const e of sweep) {
-    if (e.name.endsWith('.update-old')) await tjs.remove(dst + '/' + e.name).catch(() => {});
+    if (e.name.endsWith('.update-old'))
+      await retryLocked(() => tjs.remove(dst + '/' + e.name)).catch(() => {});
   }
   const iter = await tjs.readDir(src);
   for await (const e of iter) {
     const s = src + '/' + e.name;
     const d = dst + '/' + e.name;
     if (e.isDirectory) {
-      await winSwapDir(s, d);
+      await winSwapWalk(s, d, journal);
       continue;
     }
+    const entry = { d, aside: null, placed: false };
     if (await exists(d)) {
+      entry.aside = d + '.update-old';
       try {
-        await tjs.remove(d);
-      } catch {
-        try { await tjs.rename(d, d + '.update-old'); }
-        catch { throw new Error('cannot replace ' + d + ' (file in use?)'); }
+        await retryLocked(() => tjs.rename(d, entry.aside));
+      } catch (e) {
+        throw new Error('cannot replace ' + d + ' (file locked?): ' + (e?.message ?? e));
       }
     }
+    journal.push(entry);
     try {
-      await tjs.rename(s, d);
+      await retryLocked(() => tjs.rename(s, d));
     } catch {
-      await tjs.writeFile(d, await tjs.readFile(s)); // cross-volume fallback
+      try {
+        await tjs.writeFile(d, await tjs.readFile(s)); // cross-volume fallback
+      } catch (copyErr) {
+        await tjs.remove(d).catch(() => {}); // drop a partial copy
+        throw copyErr;
+      }
     }
+    entry.placed = true;
+  }
+}
+
+// Undo the walk, newest first: drop what landed, put the asides back.
+// Best-effort per entry; returns false when any undo failed (the caller
+// widens its error — a half-rolled-back install needs a manual re-install).
+async function winSwapRollback(journal) {
+  let ok = true;
+  for (const e of [...journal].reverse()) {
+    if (e.placed) await tjs.remove(e.d).catch(() => { ok = false; });
+    if (e.aside) await tjs.rename(e.aside, e.d).catch(() => { ok = false; });
+  }
+  return ok;
+}
+
+async function winSwapDir(src, dst) {
+  const journal = [];
+  try {
+    await winSwapWalk(src, dst, journal);
+  } catch (e) {
+    const cause = e?.message ?? String(e);
+    const restored = await winSwapRollback(journal);
+    throw new Error(restored
+      ? 'update swap failed — the current version is intact (' + cause + ')'
+      : 'update swap failed and the rollback hit errors — please re-install the app (' + cause + ')');
+  }
+  // Swap complete — drop the asides we made; still-locked files (running
+  // exes) fail removal and stay for the next update's sweep, as before.
+  for (const e of journal) {
+    if (e.aside) await tjs.remove(e.aside).catch(() => {});
   }
 }
 
@@ -381,10 +449,19 @@ async function winSwapDir(src, dst) {
 // resolve the name BEFORE any swap can happen.
 const EXE_NAME = tjs.exePath.replace(/^.*[\\/]/, '');
 
+// Passed to the relaunched app so it waits out the instance that spawned it
+// (still alive, still holding the single-instance pipe — it quits ~250 ms
+// later) instead of handing off to it and exiting. bridge.js checks for it.
+export const RELAUNCH_FLAG = '--tinyjs-relaunched';
+
 export function relaunch(bundle) {
   if (IS_WIN || IS_LINUX) {
-    // The new folder keeps the same exe name as the running app.
-    tjs.spawn([bundle + (IS_WIN ? '\\' : '/') + EXE_NAME],
+    // The new folder keeps the same exe name as the running app. On Windows
+    // a direct tjs.spawn child is killed when this process exits (libuv's
+    // job object), so start it via `launcher --spawn`, which detaches it.
+    const exe = bundle + (IS_WIN ? '\\' : '/') + EXE_NAME;
+    tjs.spawn(IS_WIN ? [bundle + '\\launcher.exe', '--spawn', exe, RELAUNCH_FLAG]
+                     : [exe, RELAUNCH_FLAG],
               { stdin: 'ignore', stdout: 'ignore', stderr: 'ignore' });
     return;
   }

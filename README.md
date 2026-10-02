@@ -30,7 +30,8 @@ The same script now handles Linux too (it detects the OS). Installs to
 newer release exists (`tinyjs update --check` only reports); `tinyjs dev`
 also mentions new releases, checking at most once a day. Linux needs the
 system WebKitGTK runtime: `sudo apt install libwebkit2gtk-4.1-0` on
-Debian/Ubuntu. Prebuilt binaries ship for Linux x86_64 and arm64 with the
+Debian/Ubuntu, `sudo zypper install libwebkit2gtk-4_1-0` on openSUSE.
+Prebuilt binaries ship for Linux x86_64 and arm64 with the
 first tagged release after Linux support merged — the installer says so
 plainly against older releases.
 To install from source instead:
@@ -41,9 +42,13 @@ git clone https://github.com/tarwin/tinyjsapp && cd tinyjsapp
 ln -s "$(pwd)/tinyjs" /usr/local/bin/tinyjs
 ```
 
-On Linux, `setup.sh` needs the system dev packages first —
+On Linux, `setup.sh` needs the system dev packages first. Debian/Ubuntu:
 `sudo apt install build-essential pkg-config libgtk-3-dev
-libwebkit2gtk-4.1-dev libayatana-appindicator3-dev` (Debian/Ubuntu). It
+libwebkit2gtk-4.1-dev libayatana-appindicator3-dev`. openSUSE:
+`sudo zypper install gcc-c++ make pkgconf-pkg-config gtk3-devel
+webkitgtk3-devel libayatana-appindicator3-devel` (WebKitGTK 4.1's dev
+package is `webkitgtk3-devel` there — the "3" says GTK3, not an older
+WebKit). It
 downloads a prebuilt `tjs` from the tinyjsapp releases, or builds txiki.js
 from source (`TJS_BUILD=1 ./setup.sh`, needs cmake + ninja).
 
@@ -74,8 +79,9 @@ powershell -ExecutionPolicy Bypass -File setup.ps1
 
 Runs on X11 and Wayland sessions — Ubuntu 24.04+ and current distros with
 `webkit2gtk-4.1`. Use the same install command above (it detects Linux) or
-build from source with `./setup.sh` (see the apt deps above). Needs the
-`libwebkit2gtk-4.1-0` runtime package.
+build from source with `./setup.sh` (see the distro deps above). Needs the
+WebKitGTK 4.1 runtime — `libwebkit2gtk-4.1-0` on Debian/Ubuntu,
+`libwebkit2gtk-4_1-0` on openSUSE.
 
 **Playing media?** WebKitGTK decodes through GStreamer, and a stock desktop
 install carries only some of it. Without the rest, `<audio>`/`<video>` play
@@ -85,7 +91,10 @@ Source Extensions report every type unsupported — which covers most podcasts,
 most internet radio, and most adaptive streaming. Add:
 
 ```sh
+# Debian/Ubuntu
 sudo apt install gstreamer1.0-plugins-bad gstreamer1.0-plugins-ugly gstreamer1.0-libav
+# openSUSE
+sudo zypper install gstreamer-plugins-bad gstreamer-plugins-ugly gstreamer-plugins-libav
 ```
 
 WebKit hints at this itself, logging "WebKit wasn't able to find a WebVTT

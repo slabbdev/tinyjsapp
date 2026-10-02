@@ -2367,3 +2367,33 @@ Windows (unchanged, WebView2 prompts) on 2026-10-02.
   Seen BEFORE the audio-extension requirement (Windows #28 above): a path
   now also needs a .wav/.mp3/… name. Behaviour for normally named files is
   unchanged.
+
+## Self-update relaunch (#16 follow-up, 2026-10-02) — Windows + Linux verified
+
+After an update the app quit and never came back, on Windows for two
+reasons: libuv puts every `tjs.spawn` child in a KILL_ON_JOB_CLOSE job, so
+the relaunched exe died with the old instance; and the new instance found the
+old one's single-instance pipe still up and handed off to it. Fix: `relaunch`
+goes through `launcher --spawn` on Windows (CreateProcess outside the job),
+and passes `--tinyjs-relaunched`, which makes the new instance wait (≤5 s)
+for the pipe to free instead of handing off.
+
+- [x] **Windows** — 1.0.0 → 1.0.1 → 1.0.2, each relaunch logs
+  `args=["--tinyjs-relaunched"]` ~300 ms after install and stays up with its
+  window. A plain double launch still hands off; a flagged launch beside a
+  live owner hands off after ~5.2 s. *(2026-10-02, Windows 11, published
+  test app + local manifest server.)*
+- [x] **Linux** — only the flag + wait loop apply there (no job objects; the
+  plain spawn should already survive). Watch a self-update relaunch: the new
+  version's window must come up, and a second launch must still hand off.
+  *(2026-10-02, arm64 VM, GNOME/X11 `DISPLAY=:1`, a `tinyjs publish`ed test
+  app + `python3 -m http.server` manifest on 127.0.0.1: 1.0.0 → 1.0.1 →
+  1.0.2, each new version's backend init logged `args=["--tinyjs-relaunched"]`
+  ~300 ms after install and its page called back ~400 ms later; the old pid
+  gone, one launcher left, still up after 6 s, and the new instance owning
+  `$XDG_RUNTIME_DIR/tinyjs-app-<id>.sock` (srw-------). A plain second launch
+  hands off in 0.06 s; a flagged launch beside the live owner hands off
+  after 5.06 s. One instance survives both.)*
+- [ ] **Any OS, first update INTO the fix** — the relaunch runs the OLD
+  version's update.js, so an app built before this fix still won't come back
+  after updating to one built with it. Expected, one time; worth seeing.
