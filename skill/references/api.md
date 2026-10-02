@@ -281,8 +281,9 @@ await s.load('coo', '/abs/path/coo.mp3');    // or ArrayBuffer/view/Blob —
    // bytes are spilled to the app cache ONCE and read from disk, never
    // streamed over the bridge. Load by path when you can. wav/mp3/flac
    // guaranteed everywhere. Re-loading a name replaces it. A path must
-   // start like an audio file (wav/aiff/caf/ogg/flac/mp3/aac/m4a/webm)
-   // or load() rejects — the sampler isn't a file reader.
+   // have an audio extension AND start like an audio file
+   // (wav/aiff/caf/ogg/opus/flac/mp3/aac/m4a/mp4/webm) or load() rejects
+   // — the sampler isn't a file reader.
 const v = await s.play('coo', { vol: 0.8, pan: -0.3, rate: 1.06, loop: false });
    // vol linear 0..1; pan −1..1 EQUAL-POWER (StereoPanner's law — same
    // numbers, same sound on all three OSes); rate = playbackRate-style ratio

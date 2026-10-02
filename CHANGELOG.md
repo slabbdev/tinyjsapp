@@ -42,9 +42,11 @@ reports, each with a runtime repro
 - **`tiny.audio.sampler.load` only accepts audio files.** A page could load
   any path and read the file back through the internal `sampler.bytes`
   call, so any page in an app without an `"api"` gate could read any file
-  the user can. `load` now refuses a path that doesn't start like an audio
-  file (WAV, AIFF, CAF, Ogg, FLAC, MP3/AAC, M4A/MP4, WebM), and
-  `sampler.bytes` answers only the main window on macOS and Windows.
+  the user can. `load` now refuses a path unless it has an audio extension
+  AND starts like an audio file (WAV, AIFF, CAF, Ogg, FLAC, MP3/AAC,
+  M4A/MP4, WebM). The contents check alone let UTF-16 text files and HEIC
+  photos through. `sampler.bytes` answers only the main window on macOS and
+  Windows.
 
 ## 0.42.3 — 2026-09-29
 

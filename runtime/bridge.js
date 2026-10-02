@@ -2275,10 +2275,21 @@ export async function createApp({ html, htmlPath, url = null, title = 'tinyjs', 
   }
   // A page hands sampler.load any path, and on mac/win the host reads it back
   // through sampler.bytes — so without a check that pair reads ANY file the
-  // user can (#28). Only files that start like audio pass: the container
-  // magics Web Audio / miniaudio decode (RIFF/RF64 WAVE, AIFF, CAF, Ogg,
-  // FLAC, ID3-tagged or raw MPEG/ADTS frames, ISO-BMFF m4a/mp4, EBML webm).
+  // user can (#28). Only audio passes: an audio extension AND a file that
+  // starts like one — the container magics Web Audio / miniaudio decode
+  // (RIFF/RF64 WAVE, AIFF, CAF, Ogg, FLAC, ID3-tagged or raw MPEG/ADTS
+  // frames, ISO-BMFF m4a/mp4, EBML webm). Magic alone isn't enough: a raw
+  // MPEG sync is just FF Ex, which every UTF-16LE text file (BOM FF FE —
+  // .reg exports, logs) starts with, and `ftyp` is also HEIC photos and
+  // QuickTime movies, so ISO-BMFF must carry an audio-capable brand too.
+  const AUDIO_EXT = /\.(wav|wave|mp3|mpga|m4a|m4b|mp4|aac|adts|ogg|oga|opus|flac|aif|aiff|aifc|caf|webm|weba)$/i;
+  const BMFF_BRANDS = new Set(['M4A ', 'M4B ', 'M4P ', 'mp41', 'mp42', 'isom', 'iso2',
+                               'iso5', 'iso6', 'dash', '3gp4', '3gp5', '3gp6', 'F4A ']);
+  // Files sampler.load(name, bytes) spilled itself: the page already had the
+  // bytes, and they carry no extension, so the read-back check skips them.
+  const samplerSpilled = new Set();
   async function looksLikeAudio(path) {
+    if (!AUDIO_EXT.test(String(path))) return false;
     let f;
     try {
       f = await tjs.open(path, 'r');
@@ -2290,7 +2301,7 @@ export async function createApp({ html, htmlPath, url = null, title = 'tinyjs', 
         (at(0, 'FORM') && (at(8, 'AIFF') || at(8, 'AIFC'))) ||
         at(0, 'caff') || at(0, 'OggS') || at(0, 'fLaC') || at(0, 'ID3') ||
         (b[0] === 0xff && (b[1] & 0xe0) === 0xe0) ||
-        at(4, 'ftyp') ||
+        (n >= 12 && at(4, 'ftyp') && BMFF_BRANDS.has(String.fromCharCode(...b.subarray(8, 12)))) ||
         (b[0] === 0x1a && b[1] === 0x45 && b[2] === 0xdf && b[3] === 0xa3);
     } catch { return false; }
     finally { f?.close().catch(() => {}); }
@@ -2316,6 +2327,7 @@ export async function createApp({ html, htmlPath, url = null, title = 'tinyjs', 
       await tjs.makeDir(dir, { recursive: true }).catch(() => {});
       path = dir + '/' + encodeURIComponent(name);
       await tjs.writeFile(path, bytes);
+      samplerSpilled.add(path);
     }
     if (IS_LINUX) {
       const r = await ask('SAMPLER', 'LOAD\t' + esc(name) + '\t' + esc(path));
@@ -2405,7 +2417,8 @@ export async function createApp({ html, htmlPath, url = null, title = 'tinyjs', 
     const path = sampler.bank.get(String(name));
     if (!path) throw new Error('sampler: unknown sound');
     // re-checked at read time: the file can have changed since load()
-    if (!(await looksLikeAudio(path))) throw new Error('sampler: not an audio file');
+    if (!samplerSpilled.has(path) && !(await looksLikeAudio(path)))
+      throw new Error('sampler: not an audio file');
     return { b64: u8ToB64(await tjs.readFile(path)) };
   }
   const samplerVoice = (id) => ({

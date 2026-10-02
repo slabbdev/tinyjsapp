@@ -2322,9 +2322,15 @@ even been compiled here.
   `NotAllowedError` for both and empty labels; with that origin keyed to
   `["media.microphone", "notify"]` the mic was granted (audio label shown)
   and the camera still refused.
-- [ ] **Windows #27** — curl.exe accepts `-H @file` (needs 7.55+) on a
+- [x] **Windows #27** — curl.exe accepts `-H @file` (needs 7.55+) on a
   root-path request with headers; the `%TEMP%\tinyjs-fetch-*` dir is gone
-  afterwards.
+  afterwards. *(2026-10-02, Windows 11, tjs 26.6.0 importing bridge.js
+  against a local node echo server. Root-path hops went through curl 8.21
+  (the Git Bash one first on PATH; the inbox System32 curl is also 8.21, so
+  the 7.55 floor itself is untested). Empty header arrived empty. Same-origin
+  302 kept Authorization/Cookie, cross-origin 302 (127.0.0.1 → localhost)
+  dropped them on both the curl and native hops, and a 303 after POST became
+  a GET without body or Content-Type. No tinyjs-fetch-* dir left behind.)*
 - [x] **Linux #27** — same root-path request through curl. Seen
   2026-10-02: a 4s root-path GET with Authorization/Cookie — `ps` showed
   only `-H @/tmp/tinyjs-fetch-XXXX/headers`; dir 0700, gone after every
@@ -2332,11 +2338,25 @@ even been compiled here.
   Redirects: cross-origin (curl hop and native hop) dropped auth/cookie and
   kept `x-keep`; same-origin kept them; 303 POST→GET dropped Content-Type;
   cross-origin bounce back to the first origin stayed stripped.
-- [ ] **Windows #28** — sampler loads a WAV from outside the page's read
+- [x] **Windows #28** — sampler loads a WAV from outside the page's read
   root (exercises `sampler.bytes`); `/etc/passwd`-style path refused.
+  *(2026-10-02, Windows 11, `tinyjs dev` + a self-driving TINYJS_HTML page.
+  A WAV in %TEMP% loads, reads back through `sampler.bytes` and plays, and
+  so does an ArrayBuffer load (spilled file, no extension). The attack: the
+  page stubs `window.__tinySampler.load` so the host never answers, which
+  keeps the bank entry alive, then calls `sampler.bytes`. With the
+  commit's magic-only check it read back a UTF-16LE text file (BOM `FF FE`
+  passes as an MPEG frame sync) and a HEIC photo (`ftyp`), even one named
+  `.m4a`. Fixed by also requiring an audio extension and an audio
+  ISO-BMFF brand; after that, all of these are refused at load: the text
+  file, the HEIC (as .heic and as .m4a), `secret.wav` holding plain text,
+  win.ini, and drivers\etc\hosts.)*
 - [x] **Linux #28** — native sampler still loads WAV/MP3. Seen
   2026-10-02: WAV, ID3 MP3 and raw-frame MP3 load and play; `/etc/passwd`
   and a text file refused; `sampler.bytes` → host-only. OGG was never
   decodable on Linux (miniaudio without stb_vorbis: "can't decode
   (wav/mp3/flac)") — not a regression. An MP3 with leading junk (e.g. a
   `----` header) is now refused by path though it still decodes from bytes.
+  Seen BEFORE the audio-extension requirement (Windows #28 above): a path
+  now also needs a .wav/.mp3/… name. Behaviour for normally named files is
+  unchanged.
