@@ -2397,3 +2397,42 @@ for the pipe to free instead of handing off.
 - [ ] **Any OS, first update INTO the fix** — the relaunch runs the OLD
   version's update.js, so an app built before this fix still won't come back
   after updating to one built with it. Expected, one time; worth seeing.
+
+## Hardening batch 1 (`fix/hardening-1`, 2026-10-02) — macOS run, Linux + Windows UNRUN
+
+Easy items from #26/#29/#30. What ran on the Mac is recorded per item;
+everything else below is written and unwatched.
+
+**#30.4 — setup.sh temp paths.** `/tmp/tjs-$$.gz`, `/tmp/txiki-src-$$` and
+`/tmp/txiki-$$.zip` (guessable, pre-plantable by another local user) are now
+one `mktemp -d` dir removed by an EXIT trap; the macOS launcher build's
+`BUILD_TMP` lives inside it (a second `trap` would have replaced the first).
+macOS: a fresh copy of the repo with no `bin/tjs` → download + launcher
+compile OK, no temp dir left behind. The Linux branches are syntax-checked only.
+
+**#26 — pinned txiki hashes.** `runtime/txiki.sha256` holds the sha256 of the
+`tjs` binary inside each saghul/txiki.js zip we fetch (v26.6.0: macOS arm64,
+macOS x86_64, Windows x86_64; each zip matched GitHub's published asset
+digest first). Checked by: `cli.js` `fetchTxiki` (after download AND on every
+cache reuse — the cache is user-writable and gets bundled + codesigned),
+`setup.sh` (macOS download), `setup.ps1` (Windows download, so Windows CI
+too) and `release.yml` (macOS packaging). Bumping txiki now means adding
+lines there first. The Linux `setup.sh` path pulls `tjs` from our own
+*latest* release — no fixed hash to pin.
+macOS, seen 2026-10-02: `build --arch x86_64` with an empty cache downloads
+and passes; with the real cache a full signed build completes; the cache
+swapped for another valid x86_64 Mach-O (#26's repro) → build refused
+("modified after download"). `setup.sh` with a wrong pin → "refusing to
+install", nothing in `bin/`. release.yml's loop run locally: both arches
+pass; a wrong x86_64 pin → `::error::` and exit 1.
+
+- [ ] **Windows #26** — `Remove-Item bin\tjs.exe`, run `setup.ps1` → installs
+  as before. Edit one char of the `windows-x86_64` line in
+  `runtime\txiki.sha256`, delete `bin\tjs.exe` again → setup stops with
+  "refusing to install it" and no `bin\tjs.exe`. Restore the line. (The file
+  checks out CRLF on Windows; `-split` treats the `\r` as whitespace.)
+- [ ] **Windows CI #26** — the next tag's Windows job goes through the new
+  `setup.ps1` check; the macOS job through release.yml's. Both green.
+- [ ] **Linux #30.4** — `rm bin/tjs && ./setup.sh` (prebuilt download) and
+  `rm bin/tjs && TJS_BUILD=1 ./setup.sh` (source build) both still produce a
+  working `bin/tjs`; no `/tmp/tmp.*` dir left afterwards.

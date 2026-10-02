@@ -23,7 +23,20 @@ if (-not (Test-Path 'bin\tjs.exe')) {
     Invoke-WebRequest -Uri "https://github.com/saghul/txiki.js/releases/download/$TJS_VERSION/txiki-windows-x86_64.zip" -OutFile $zip
     $dst = Join-Path $env:TEMP "txiki-$PID"
     Expand-Archive -Force $zip $dst
-    Copy-Item (Join-Path $dst 'txiki-windows-x86_64\tjs.exe') 'bin\tjs.exe'
+    # Checked against the pinned hash (runtime/txiki.sha256, #26).
+    $exe = Join-Path $dst 'txiki-windows-x86_64\tjs.exe'
+    $key = "$TJS_VERSION/txiki-windows-x86_64"
+    $want = (Get-Content 'runtime\txiki.sha256' | ForEach-Object { $f = -split $_; if ($f[1] -eq $key) { $f[0] } }) | Select-Object -First 1
+    $got = (Get-FileHash -Algorithm SHA256 $exe).Hash.ToLower()
+    if (-not $want) {
+        Remove-Item -Recurse -Force $zip, $dst
+        throw "no pinned sha256 for $key in runtime\txiki.sha256 (got $got) - add it first"
+    }
+    if ($got -ne $want) {
+        Remove-Item -Recurse -Force $zip, $dst
+        throw "txiki.js $TJS_VERSION (windows-x86_64) has sha256 $got, expected $want - refusing to install it"
+    }
+    Copy-Item $exe 'bin\tjs.exe'
     Remove-Item -Recurse -Force $zip, $dst
 }
 

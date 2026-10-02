@@ -142,6 +142,17 @@ if [ ! -x bin/tjs ]; then
   curl -fsSL -o "$TMPD/txiki.zip" \
     "https://github.com/saghul/txiki.js/releases/download/$TJS_VERSION/txiki-macos-$TJS_ARCH.zip"
   unzip -q -o "$TMPD/txiki.zip" -d "$TMPD/txiki"
+  # Checked against the pin cli.js uses too (runtime/txiki.sha256, #26).
+  WANT="$(awk -v k="$TJS_VERSION/txiki-macos-$TJS_ARCH" '$2 == k { print $1 }' runtime/txiki.sha256)"
+  GOT="$(shasum -a 256 "$TMPD/txiki/txiki-macos-$TJS_ARCH/tjs" | cut -d' ' -f1)"
+  if [ -z "$WANT" ]; then
+    echo "no pinned sha256 for $TJS_VERSION/txiki-macos-$TJS_ARCH in runtime/txiki.sha256 (got $GOT) — add it first" >&2
+    exit 1
+  fi
+  if [ "$GOT" != "$WANT" ]; then
+    echo "txiki.js $TJS_VERSION ($TJS_ARCH) has sha256 $GOT, expected $WANT — refusing to install it" >&2
+    exit 1
+  fi
   mv "$TMPD/txiki/txiki-macos-$TJS_ARCH/tjs" bin/tjs
   chmod +x bin/tjs
 fi
