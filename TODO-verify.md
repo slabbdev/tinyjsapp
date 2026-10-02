@@ -2489,3 +2489,33 @@ swaps the page (store write + self-quit). Nothing below has run.
 - [ ] **Windows + Linux #30.7** — the two-window stream test (each window gets
   its own full body) and a `tiny.store` round trip; same bridge code, so this
   is a smoke check, not a new path.
+
+## Per-app WebView2 profile on Windows (#29.1, `fix/29-webview2-profile`, 2026-10-02) — UNBUILT
+
+Stock webview keys the WebView2 user-data folder on the exe name, and every
+tinyjs app's window belongs to `launcher.exe` (dev: `launcher-win.exe`) — so
+ALL tinyjs apps on a machine shared one profile under
+`%APPDATA%\launcher.exe`: cookies, IndexedDB, permissions, and localStorage
+(file:// is a single origin under `--allow-file-access-from-files`, so two
+apps' `localStorage.setItem('settings')` clobbered each other). The bridge
+now sets `TINYJS_WEBVIEW2_DATA=%APPDATA%\<app-id>\WebView2` (after #29.4's
+env strip, so it can't be inherited) and the win32_edge.hh patch uses it,
+creating parents; unset keeps stock. Dev and built copies of one app share
+its folder. **No migration** (decided 2026-10-02 — small user base): every
+app starts with a fresh profile, i.e. wrapped-site logins and page
+localStorage are gone once after updating. The old shared folder is left in
+place. `tinyjs dev` now also rebuilds launcher-win.exe when win32_edge.hh
+changes. Not compiled anywhere yet (no MinGW on the Mac).
+
+- [ ] **Windows, builds** — `setup.ps1` (or `tinyjs dev`, which now rebuilds
+  on the header change) compiles cleanly.
+- [ ] **Windows, folder** — run an app (dev, then built) → `%APPDATA%\<app-id>\WebView2\EBWebView`
+  appears; nothing new written under `%APPDATA%\launcher.exe` /
+  `launcher-win.exe`.
+- [ ] **Windows, isolation** — two apps with different ids: app A
+  `localStorage.setItem('k','A')`, app B reads `localStorage.getItem('k')` →
+  null. Both running at the same time open fine.
+- [ ] **Windows, persistence** — app A's value survives a restart, and a
+  `win.open` second window of app A sees it (same profile per app).
+- [ ] **Windows, update** — a built app self-updates and relaunches with its
+  profile intact (same id → same folder).

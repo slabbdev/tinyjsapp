@@ -1182,6 +1182,12 @@ export async function createApp({ html, htmlPath, url = null, title = 'tinyjs', 
     // launcher.exe, which can't start on its own, so a default pin would be
     // dead on next launch. Dev spawns set nothing (nothing worth pinning).
     if (IS_WIN && (await bundlePath())) spawnEnv.TINYJS_APP_EXE = tjs.exePath;
+    // Windows: each app gets its own WebView2 profile next to its store.json.
+    // Stock WebView2 keys the profile on the exe name, and every tinyjs app's
+    // window is launcher.exe — so all of them shared cookies, localStorage
+    // (file:// is one origin here), IndexedDB and permissions (#29). No
+    // migration from the old shared %APPDATA%\launcher.exe: apps start fresh.
+    if (IS_WIN) spawnEnv.TINYJS_WEBVIEW2_DATA = (appDataDir(id) + '/WebView2').replace(/\//g, '\\');
     // Linux: the app id names the WM class (window ↔ .desktop matching) and
     // the notification identity. Dev sets it from the CLI; built apps here.
     if (IS_LINUX && id && !spawnEnv.TINYJS_APP_ID) spawnEnv.TINYJS_APP_ID = id;

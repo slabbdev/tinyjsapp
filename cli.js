@@ -1216,7 +1216,10 @@ async function ensureLauncherFresh() {
   const exe = TOOL_DIR + 'native/' +
     (IS_WIN ? 'launcher-win.exe' : IS_LINUX ? 'launcher-linux' : 'launcher-macos');
   const srcs = IS_WIN
-    ? ['native/launcher-win.cc', 'runtime/tiny.js']
+    // win32_edge.hh carries tinyjs patches (env options, origin queue,
+    // per-app profile) — an edit there must rebuild too.
+    ? ['native/launcher-win.cc', 'runtime/tiny.js',
+       'native/include/webview/detail/backends/win32_edge.hh']
     : IS_LINUX
       ? ['native/launcher-linux.cc', 'runtime/tiny.js']
       : ['native/launcher-macos.cc', 'runtime/tiny.js'];
