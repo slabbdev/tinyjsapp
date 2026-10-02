@@ -409,8 +409,11 @@ const REQUIREMENTS = {
     detail: 'The tray needs an AppIndicator/StatusNotifier host. GNOME needs the '
       + 'AppIndicator shell extension; most other desktops have one built in.',
     probe: async () => !!(await busNameOwned('org.kde.StatusNotifierWatcher')),
+    // openSUSE ships no tray-host package in its default repos (GNOME users
+    // get the AppIndicator extension from extensions.gnome.org), so zypper
+    // gets no install line rather than one zypper cannot satisfy.
     packages: { apt: ['gnome-shell-extension-appindicator'], dnf: ['gnome-shell-extension-appindicator'],
-                pacman: ['libappindicator-gtk3'], zypper: ['gnome-shell-extension-appindicator'] },
+                pacman: ['libappindicator-gtk3'] },
   },
   'windowPosition': {
     feature: 'placing your own windows (setPosition / center)',
