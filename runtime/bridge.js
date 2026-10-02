@@ -967,10 +967,15 @@ function makeStore(appId) {
   const dir = appDataDir(appId);
   const path = dir + '/store.json';
   let data = null;
+  // A null-prototype object, so every key is just a key: on a plain {},
+  // get('constructor') answered Object's own function and set('__proto__', v)
+  // swapped the store's prototype instead of storing anything (#30).
   async function load() {
     if (data) return data;
-    try { data = JSON.parse(dec.decode(await tjs.readFile(path))); }
-    catch { data = {}; }
+    let parsed = null;
+    try { parsed = JSON.parse(dec.decode(await tjs.readFile(path))); } catch {}
+    data = Object.create(null);
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) Object.assign(data, parsed);
     return data;
   }
   // Persistence is best-effort: the in-memory value is always updated, and a

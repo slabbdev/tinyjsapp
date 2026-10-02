@@ -2466,3 +2466,26 @@ swaps the page (store write + self-quit). Nothing below has run.
   `getUserMedia` still `NotAllowedError`. Tray icon, WM class / .desktop
   match and the icon still right (TINYJS_APP_ID/ICON now always ours).
 - [ ] **Linux #29.4, dev regression** — `TINYJS_HTML=… tinyjs dev` unchanged.
+
+**#30.7 — bridge odds and ends** (pure bridge.js; nothing launcher-side).
+- *Fetch streams keyed by window.* Every page counts `tiny.fetch` stream ids
+  `f1, f2…` from scratch, so two windows streaming at once collided on `f1` —
+  the later one replaced the earlier in the bridge's map, and any window could
+  pull or cancel another's by id. Now keyed `<calling window>\n<id>`; a
+  reloaded page's leftover stream under a reused id is cancelled first.
+  macOS, seen 2026-10-02 (main + a `win.open` child, both `{stream:true}` from
+  a local server, 300 000 bytes each): OLD bridge → main got `8192:A` (cut off
+  after its first chunk), child `300000:B`; FIXED → `300000:A` / `300000:B`.
+- *Titles via `one()`* — `\r` and `\t` flattened like `\n` (both setTitle
+  paths). `setTitle(null)` now gives '' rather than "null".
+- *Store is a null-prototype object.* On the plain `{}`,
+  `set('__proto__', {x:1})` swapped the store's prototype (then `get('x')` →
+  1, nothing persisted) and backend `get('constructor')` answered Object's
+  function. A non-object store.json (`null`, an array) now loads as empty
+  instead of throwing on every call. macOS, seen 2026-10-02 (dev page): OLD →
+  `x` 1, `__proto__` not in the file or in `all()`; FIXED → `x` null,
+  `__proto__` stored, saved and listed like any key.
+
+- [ ] **Windows + Linux #30.7** — the two-window stream test (each window gets
+  its own full body) and a `tiny.store` round trip; same bridge code, so this
+  is a smoke check, not a new path.
