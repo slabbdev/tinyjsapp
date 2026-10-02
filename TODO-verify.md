@@ -2294,3 +2294,33 @@ and `xdg-open` reached `onOpenUrl`. Refused, with the warning printed and the
 window still opening, for: a 777 dir we own, a symlink to a dir we own, a
 plain file, and (made via a root docker container, no sudo on the VM) a dir
 owned by `nobody` at 700 and at 777. No socket was created in any refused dir.
+
+## Security fixes #24 / #27 / #28 (2026-09-30) — macOS sampler + fetch verified only
+
+Branch `fix/security-24-27-28`. #28 (sampler refuses non-audio paths, a real
+WAV still loads/reads back/plays) and #27 (no headers in curl's argv, temp dir
+removed, credentials dropped on a cross-origin redirect, kept on same-origin)
+were run on macOS. The media-capture change (#24) compiled and ran on macOS
+but nobody has yet watched a prompt appear; the Linux launcher change has not
+even been compiled here.
+
+- [ ] **macOS #24, own page** — a BUILT app with
+  `"permissions": {"microphone": "why"}`: `getUserMedia({audio:true})` from
+  its own `file://` page → only the TCC prompt (first run), then granted.
+- [ ] **macOS #24, foreign origin** — same app, page redirects to
+  `http://127.0.0.1:<port>` (Sam's repro in #24) → WebKit's prompt naming
+  that origin appears; Deny → `NotAllowedError`.
+- [ ] **macOS #24, trusted origin** — add
+  `"api": {"origins": {"http://127.0.0.1:<port>": ["media.*"]}}` → no WebKit
+  prompt. Also a cross-origin iframe inside the own page → prompt (the
+  requesting frame's origin is checked, not just the main frame's).
+- [ ] **Linux #24** — compiles; own `file://` page granted when declared;
+  a redirected-to foreign origin → `NotAllowedError`; trusted via
+  `api.origins` → granted; enumerateDevices labels follow the same rule.
+- [ ] **Windows #27** — curl.exe accepts `-H @file` (needs 7.55+) on a
+  root-path request with headers; the `%TEMP%\tinyjs-fetch-*` dir is gone
+  afterwards.
+- [ ] **Linux #27** — same root-path request through curl.
+- [ ] **Windows #28** — sampler loads a WAV from outside the page's read
+  root (exercises `sampler.bytes`); `/etc/passwd`-style path refused.
+- [ ] **Linux #28** — native sampler still loads WAV/OGG/MP3.

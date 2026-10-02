@@ -541,8 +541,12 @@ await tiny.app.permissions.request('accessibility');  // prompt/open Settings
 //        'automation' (System Events) or 'automation:<bundle-id>'
 // 'screen' never reads 'undetermined' — macOS only exposes a yes/no
 // preflight for screen recording ('denied' until granted in Settings).
-// mic/camera: getUserMedia() just works — the launcher grants WebKit's
-// per-origin prompt so users only see the system dialog naming your app.
+// mic/camera: getUserMedia() just works on the app's own pages — the
+// launcher grants WebKit's per-origin prompt so users only see the system
+// dialog naming your app. Any other origin (a wrapped site, a redirect, a
+// third-party iframe) gets the engine's prompt naming that site (macOS,
+// Windows) or a denial (Linux) unless an "api.origins" key allows
+// "media.microphone" / "media.camera" for it.
 // Speech-to-text isn't a tiny.* call at all — the page's own
 // webkitSpeechRecognition works (WebKit and WebView2 both have it), but a
 // packaged app must declare BOTH "microphone" and "speechRecognition" usage

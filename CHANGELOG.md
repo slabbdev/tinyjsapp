@@ -4,6 +4,48 @@ All notable changes to tinyjs. Versions are git tags (`vX.Y.Z`); a tag push
 builds and publishes the release. The rendered version of this file lives at
 https://tinyjs.app/changelog.
 
+## Unreleased
+
+Security fixes. Thanks to [@slabbdev](https://github.com/slabbdev) for the
+reports, each with a runtime repro
+([#24](https://github.com/tarwin/tinyjsapp/issues/24),
+[#27](https://github.com/tarwin/tinyjsapp/issues/27),
+[#28](https://github.com/tarwin/tinyjsapp/issues/28)).
+
+- **Only the app's own pages get the microphone and camera without
+  asking.** On macOS the launcher granted every `getUserMedia` request, so
+  in a site wrapper the wrapped site, any page it redirected to, or a
+  third-party iframe got the device with only the one system prompt, which
+  names the app and not the site. On Linux the `"permissions"` block
+  entitled every page in the app. Now the app's own `file://` pages (and the
+  dev server in `tinyjs dev`) are granted as before; any other origin gets
+  WebKit's prompt naming that site on macOS and is refused on Linux. An app
+  can trust a site explicitly with an `"api"` `origins` key that allows
+  `media.microphone` / `media.camera`, e.g.
+  `"https://meet.example.com": ["media.*", "notify"]`. Presets and top-level
+  lists never grant it. Windows is unchanged: WebView2 already asks per
+  site.
+- **`tiny.fetch` no longer puts request headers on curl's command line.**
+  curl is only in the picture as a stopgap: txiki.js 26.6.0's own fetch
+  sends a root-path URL as `GET //` and can't complete a handshake with
+  TLS 1.2-only servers, so until fixed txiki releases ship, those two kinds
+  of request go through the system curl instead. On those requests, headers
+  such as `Authorization` and `Cookie` were readable by any local user with
+  `ps` while the request ran. They now go through a temp file in a folder
+  only the current user can open, deleted when curl exits. Every other
+  request never touched curl.
+- **`tiny.fetch` drops credentials on cross-origin redirects.**
+  `Authorization`, `Cookie` and `Proxy-Authorization` were sent again to
+  whatever origin a redirect pointed at. They're now dropped when a
+  redirect changes origin, as browsers do, and a redirect that turns a POST
+  into a GET also drops the body's `Content-*` headers.
+- **`tiny.audio.sampler.load` only accepts audio files.** A page could load
+  any path and read the file back through the internal `sampler.bytes`
+  call, so any page in an app without an `"api"` gate could read any file
+  the user can. `load` now refuses a path that doesn't start like an audio
+  file (WAV, AIFF, CAF, Ogg, FLAC, MP3/AAC, M4A/MP4, WebM), and
+  `sampler.bytes` answers only the main window on macOS and Windows.
+
 ## 0.42.3 — 2026-09-29
 
 Security fix. Thanks to [@slabbdev](https://github.com/slabbdev) for the

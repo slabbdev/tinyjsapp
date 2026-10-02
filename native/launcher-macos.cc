@@ -2395,25 +2395,88 @@ static void do_perm(webview_t, void *arg) {
 #endif
 
 // --- media capture (macOS) ---------------------------------------------------
-// getUserMedia asks the WKUIDelegate per-origin before macOS asks TCC. The
-// page is the app's own code, so that origin prompt is pure noise (it names
-// file:// or localhost) and would double up with the system dialog — grant it
-// and let the one TCC prompt naming the app be the real consent. The vendored
-// delegate class is registered at runtime, so the handler (macOS 12+ selector,
-// never called on older systems) is added here instead of patching the header.
+// getUserMedia asks the WKUIDelegate per-origin before macOS asks TCC. For the
+// app's own pages that origin prompt is pure noise (it names file:// or the
+// dev server) and would double up with the system dialog, so those are
+// granted and the one TCC prompt naming the app is the real consent. But the
+// TCC grant names the APP, not the site — so anything else (a wrapped site, a
+// page it redirected to, a third-party iframe) gets WebKit's own prompt
+// naming its origin, unless the manifest explicitly trusts that origin
+// (#24). The bridge hands the trusted set over as TINYJS_MEDIA_ORIGINS
+// ("<kind> <pattern>" lines, see mediaTrustLines); file:// is always in it.
+// Both the origin WebKit passes and the requesting frame's own origin must
+// be trusted. The vendored delegate class is registered at runtime, so the
+// handler (macOS 12+ selector, never called on older systems) is added here
+// instead of patching the header.
 #ifdef __APPLE__
+static std::string media_origin_str(WKSecurityOrigin *so) {
+  if (!so || !so.protocol.length) return "null";
+  std::string o = std::string([so.protocol UTF8String]) + "://";
+  if (so.host.length) o += [so.host UTF8String];
+  NSInteger port = so.port;
+  if (port && !((port == 80 && [so.protocol isEqualToString:@"http"]) ||
+                (port == 443 && [so.protocol isEqualToString:@"https"])))
+    o += ":" + std::to_string((long)port);
+  return o;
+}
+
+// '*' matches any run of characters, everything else literally — the same
+// globs the bridge's api gate compiles to regexes.
+static bool media_glob(const char *p, const char *s) {
+  if (!*p) return !*s;
+  if (*p == '*') {
+    for (const char *t = s;; t++) {
+      if (media_glob(p + 1, t)) return true;
+      if (!*t) return false;
+    }
+  }
+  return *s && *p == *s && media_glob(p + 1, s + 1);
+}
+
+static bool media_trusted(const std::string &kind, const std::string &origin) {
+  if (origin == "file://") return true;
+  static std::vector<std::pair<std::string, std::string>> rules = [] {
+    std::vector<std::pair<std::string, std::string>> r;
+    const char *env = getenv("TINYJS_MEDIA_ORIGINS");
+    std::string all = env ? env : "", line;
+    for (size_t i = 0; i <= all.size(); i++) {
+      if (i < all.size() && all[i] != '\n') { line += all[i]; continue; }
+      size_t sp = line.find(' ');
+      if (sp != std::string::npos)
+        r.push_back({line.substr(0, sp), line.substr(sp + 1)});
+      line.clear();
+    }
+    return r;
+  }();
+  for (auto &r : rules)
+    if (r.first == kind && media_glob(r.second.c_str(), origin.c_str()))
+      return true;
+  return false;
+}
+
 static void install_media_capture_hook() {
   Class cls = objc_lookUpClass("WebviewWKUIDelegate");
   if (!cls) return;
   SEL sel = sel_registerName("webView:requestMediaCapturePermissionForOrigin:"
                              "initiatedByFrame:type:decisionHandler:");
   if (class_getInstanceMethod(cls, sel)) return;
-  class_addMethod(cls, sel,
-                  (IMP)(+[](id, SEL, id, id, id, NSInteger,
-                            void (^decision)(NSInteger)) {
-                    decision(1 /* WKPermissionDecisionGrant */);
-                  }),
-                  "v@:@@@q@?");
+  class_addMethod(
+      cls, sel,
+      (IMP)(+[](id, SEL, id, WKSecurityOrigin *origin, WKFrameInfo *frame,
+                NSInteger type, void (^decision)(NSInteger)) {
+        // WKMediaCaptureType: 0 camera, 1 microphone, 2 both
+        std::string a = media_origin_str(origin);
+        std::string b = media_origin_str(frame.securityOrigin);
+        auto ok = [&](const char *kind) {
+          return media_trusted(kind, a) && media_trusted(kind, b);
+        };
+        bool trusted = type == 0   ? ok("camera")
+                       : type == 1 ? ok("microphone")
+                                   : ok("camera") && ok("microphone");
+        // 1 = WKPermissionDecisionGrant, 0 = WKPermissionDecisionPrompt
+        decision(trusted ? 1 : 0);
+      }),
+      "v@:@@@q@?");
 }
 #endif
 

@@ -80,7 +80,9 @@ reason — nothing hangs. `tiny.macos.*` off macOS REJECTS (never null).
 - `idleTime` needs GNOME. `authenticate` always false (no identity check
   exists — gates fail closed). `thumbnail` images-only.
 - getUserMedia works, gated by the manifest `"permissions"` block (no OS
-  prompt exists — undeclared = NotAllowedError); MediaRecorder records
+  prompt exists — undeclared = NotAllowedError) AND the requesting origin
+  (own pages, or an `api.origins` key allowing `media.*`; frame-blind — the
+  main frame's origin decides); MediaRecorder records
   video/mp4 (webkit 2.52+).
 - **Audio rule: no Web Audio into `ctx.destination`** — crackles under
   WebKitGTK (measured; no graph-side fix). Elements play directly; SFX →

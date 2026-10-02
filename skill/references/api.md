@@ -280,7 +280,9 @@ const s = tiny.audio.sampler;
 await s.load('coo', '/abs/path/coo.mp3');    // or ArrayBuffer/view/Blob —
    // bytes are spilled to the app cache ONCE and read from disk, never
    // streamed over the bridge. Load by path when you can. wav/mp3/flac
-   // guaranteed everywhere. Re-loading a name replaces it.
+   // guaranteed everywhere. Re-loading a name replaces it. A path must
+   // start like an audio file (wav/aiff/caf/ogg/flac/mp3/aac/m4a/webm)
+   // or load() rejects — the sampler isn't a file reader.
 const v = await s.play('coo', { vol: 0.8, pan: -0.3, rate: 1.06, loop: false });
    // vol linear 0..1; pan −1..1 EQUAL-POWER (StereoPanner's law — same
    // numbers, same sound on all three OSes); rate = playbackRate-style ratio
@@ -494,6 +496,12 @@ await tiny.app.permissions.request('accessibility'); // prompts / opens Settings
   entitlements when signing). Linux: the manifest IS the gate — the launcher
   answers WebKit's permission request from it, undeclared = NotAllowedError,
   and there's no OS prompt underneath.
+- Only the app's OWN pages (file://, the dev server) get mic/camera silently.
+  Other origins (wrapped site, redirect, third-party iframe) get the engine's
+  per-site prompt (macOS/Windows) or NotAllowedError (Linux) — unless an
+  `"api": { "origins": { "<origin>": [...] } }` key allows `media.microphone`
+  / `media.camera` (e.g. `["media.*", "notify"]`). Presets and top-level
+  lists never grant it.
 - speech-to-text: the page's `webkitSpeechRecognition` (WebKit AND WebView2
   have it) needs BOTH `microphone` and `speechRecognition` usage strings in
   a built app — missing the second = `service-not-allowed` with no prompt.

@@ -1133,9 +1133,14 @@ await <b>tiny.app.permissions.request</b>('accessibility');
 <i>// names: 'accessibility', 'screen', 'notifications' (packaged apps),</i>
 <i>//        'microphone', 'camera' (the TCC layer under getUserMedia),</i>
 <i>//        'automation' (System Events) or 'automation:&lt;bundle-id&gt;'</i></pre>
-    <p class="note">Mic + camera: <code>getUserMedia()</code> just works in a
-    tinyjs page — the launcher answers WebKit's per-origin prompt itself, so
-    users see the one system dialog naming your app. A packaged app must
+    <p class="note">Mic + camera: <code>getUserMedia()</code> just works in
+    the app's own pages — the launcher answers WebKit's per-origin prompt
+    itself, so users see the one system dialog naming your app. Any other
+    origin (a wrapped site, a page it redirects to, a third-party iframe) gets
+    the engine's prompt naming that site on macOS and Windows, and a denial on
+    Linux — unless an <code>"api"</code> <code>origins</code> key allows
+    <code>media.microphone</code> / <code>media.camera</code> for it, e.g.
+    <code>"https://meet.example.com": ["media.*", "notify"]</code>. A packaged app must
     declare <code>"permissions": { "microphone": "why", "camera": "why" }</code>
     in tinyjs.json: the strings become the dialog text (macOS kills a bundle
     that captures without them), and signed builds get the matching
@@ -1401,7 +1406,11 @@ const { text, calls } = await <b>app.macos.ai.generate</b>('Move the window to 2
     hostile page, so page-side gating is decoration — and keys off the calling
     frame's origin as the <i>engine</i> reports it, not as the page claims it.
     With <code>origins</code> present, an origin matching no key gets nothing,
-    so a redirect to an unlisted domain inherits no access.</p>
+    so a redirect to an unlisted domain inherits no access. The same keys
+    decide mic/camera: only an origin whose key allows
+    <code>media.microphone</code> / <code>media.camera</code> skips the
+    per-site prompt on macOS or is allowed at all on Linux (presets and
+    top-level lists never do; Windows always shows WebView2's own prompt).</p>
     <pre>{ <i>// preset, lists, or per-origin keyholes — enable wins over disable</i>
   "api": "wrapper",
   "api": { "disable": ["*"], "enable": ["notify", "win.*", "store.*"] },

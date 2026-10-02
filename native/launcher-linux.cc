@@ -745,9 +745,50 @@ static gboolean on_button_press(GtkWidget*, GdkEventButton* ev, gpointer) {
 // tinyjs.json's "permissions" block as TINYJS_MEDIA ("camera,microphone")
 // and only what the app declared is allowed. Device-info (enumerateDevices
 // labels, for camera pickers) rides the same gate.
-static gboolean on_permission_request(WebKitWebView*, WebKitPermissionRequest* req, gpointer) {
+// The manifest entitles the APP, not every page in it (#24): the requesting
+// origin must also be trusted — the app's own file:// pages, the dev server,
+// or an "api.origins" key that allows media.<kind> (TINYJS_MEDIA_ORIGINS,
+// "<kind> <pattern>" lines, see mediaTrustLines in bridge.js). Anything else
+// is denied: there's no prompt to fall back to. The origin is the webview's
+// main-frame URI — frame-blind, like CALL stamping (TODO-site-wrapper.md),
+// so a third-party iframe inside a trusted page still rides the page's grant.
+static bool media_glob(const char* p, const char* s) {
+  if (!*p) return !*s;
+  if (*p == '*') {
+    for (const char* t = s;; t++) {
+      if (media_glob(p + 1, t)) return true;
+      if (!*t) return false;
+    }
+  }
+  return *s && *p == *s && media_glob(p + 1, s + 1);
+}
+
+static bool media_trusted(const std::string& kind, const std::string& origin) {
+  if (origin == "file://") return true;
+  static std::vector<std::pair<std::string, std::string>> rules = [] {
+    std::vector<std::pair<std::string, std::string>> r;
+    const char* env = g_getenv("TINYJS_MEDIA_ORIGINS");
+    std::string all = env ? env : "", line;
+    for (size_t i = 0; i <= all.size(); i++) {
+      if (i < all.size() && all[i] != '\n') { line += all[i]; continue; }
+      size_t sp = line.find(' ');
+      if (sp != std::string::npos) r.push_back({line.substr(0, sp), line.substr(sp + 1)});
+      line.clear();
+    }
+    return r;
+  }();
+  for (auto& r : rules)
+    if (r.first == kind && media_glob(r.second.c_str(), origin.c_str())) return true;
+  return false;
+}
+
+static gboolean on_permission_request(WebKitWebView* wv, WebKitPermissionRequest* req, gpointer) {
   const char* env = g_getenv("TINYJS_MEDIA");
   std::string declared = env ? env : "";
+  std::string origin = origin_from_uri(webkit_web_view_get_uri(wv));
+  auto allowed = [&](const char* kind) {
+    return declared.find(kind) != std::string::npos && media_trusted(kind, origin);
+  };
   if (WEBKIT_IS_USER_MEDIA_PERMISSION_REQUEST(req)) {
     WebKitUserMediaPermissionRequest* um = WEBKIT_USER_MEDIA_PERMISSION_REQUEST(req);
 #if WEBKIT_CHECK_VERSION(2, 34, 0)
@@ -757,16 +798,15 @@ static gboolean on_permission_request(WebKitWebView*, WebKitPermissionRequest* r
     }
 #endif
     bool ok = true;
-    if (webkit_user_media_permission_is_for_video_device(um) &&
-        declared.find("camera") == std::string::npos) ok = false;
-    if (webkit_user_media_permission_is_for_audio_device(um) &&
-        declared.find("microphone") == std::string::npos) ok = false;
+    if (webkit_user_media_permission_is_for_video_device(um) && !allowed("camera")) ok = false;
+    if (webkit_user_media_permission_is_for_audio_device(um) && !allowed("microphone")) ok = false;
     if (ok) webkit_permission_request_allow(req);
     else webkit_permission_request_deny(req);
     return TRUE;
   }
-  if (WEBKIT_IS_DEVICE_INFO_PERMISSION_REQUEST(req) && !declared.empty()) {
-    webkit_permission_request_allow(req);
+  if (WEBKIT_IS_DEVICE_INFO_PERMISSION_REQUEST(req)) {
+    if (allowed("camera") || allowed("microphone")) webkit_permission_request_allow(req);
+    else webkit_permission_request_deny(req);
     return TRUE;
   }
   return FALSE;  // everything else keeps WebKit's default (deny)

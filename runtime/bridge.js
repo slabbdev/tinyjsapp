@@ -83,6 +83,17 @@ const nativeFetch = globalThis.fetch?.bind(globalThis);
 let curlProbe = null;
 const haveCurl = () => (curlProbe ??= probeOk(['curl', '--version']));
 const REDIRECT_CODES = new Set([301, 302, 303, 307, 308]);
+// Request headers a redirect must not carry to another origin (#27). WHATWG
+// fetch drops Authorization there; a browser never lets a page set Cookie or
+// Proxy-Authorization at all, but tiny.fetch does, so those go too.
+const CROSS_ORIGIN_STRIP = new Set(['authorization', 'cookie', 'proxy-authorization']);
+// …and the body's own headers once a redirect turns the request into a GET.
+const BODY_HEADERS = new Set(['content-type', 'content-length', 'content-encoding',
+                              'content-language', 'content-location']);
+// A Headers object, not pairs: txiki's native fetch reads an array as a plain
+// object ({"0": "k,v", "length": …} went onto the wire, measured 26.6.0).
+const dropHeaders = (H, names) =>
+  new Headers(headerPairs(H).filter(([k]) => !names.has(String(k).toLowerCase())));
 
 // Header init (Headers, [[k, v], ...] or a plain object) as validated pairs.
 // WHATWG fetch rejects a name that isn't an RFC 9110 token and a value with
@@ -122,33 +133,38 @@ async function curlFetch(url, init = {}) {
   // identity unless the caller asked for something: curl won't decode what we
   // don't tell the server to send, and honest lengths beat saved bytes here
   if (!pairs.some(([k]) => k.toLowerCase() === 'accept-encoding')) pairs.push(['accept-encoding', 'identity']);
-  // "Name:" with nothing after it tells curl to REMOVE that header; "Name;"
-  // is its spelling for sending it empty
-  for (const [k, v] of pairs) args.push('-H', String(v).trim() === '' ? k + ';' : k + ': ' + v);
   // hiddenArgv: on Windows every hop would otherwise flash a console window
   // (curl.exe is a console app, the packaged app is GUI-subsystem)
   await readyHiddenArgv();
   const body = init.body;
-  let bodyDir = null;
-  if (body != null) {
-    if (typeof body !== 'string' && !(body instanceof Uint8Array))
-      throw new TypeError('fetch fallback: only string/Uint8Array bodies');
-    // a file, not stdin: txiki 26.6.0 never settles a spawned child's stdin
-    // write (saghul/txiki.js#1027, fixed after that release), so the old
-    // `await w.write(body)` hung every curl-routed request with a body. The
-    // 0700 dir keeps the body private; it goes once curl has exited.
-    bodyDir = await tjs.makeTempDir(tjs.tmpDir + '/tinyjs-body-XXXXXX');
-    try { await tjs.writeFile(bodyDir + '/body', body); }
-    catch (e) { tjs.remove(bodyDir).catch(() => {}); throw e; }
-    args.push('--data-binary', '@' + bodyDir + '/body');
-  }
+  if (body != null && typeof body !== 'string' && !(body instanceof Uint8Array))
+    throw new TypeError('fetch fallback: only string/Uint8Array bodies');
+  // Headers and body go through files in a 0700 temp dir, never argv: argv is
+  // readable by every local user via `ps`, and headers carry Authorization /
+  // Cookie (#27). One header per line (headerPairs already refused CR/LF);
+  // "Name:" with nothing after it tells curl to REMOVE that header, "Name;"
+  // is its spelling for sending it empty. `-H @file` needs curl 7.55 (2017;
+  // Windows 10 1803's curl.exe is 7.55.1). The body is a file rather than
+  // stdin because txiki 26.6.0 never settles a spawned child's stdin write
+  // (saghul/txiki.js#1027, fixed after that release). The dir goes once curl
+  // has exited.
+  const ioDir = await tjs.makeTempDir(tjs.tmpDir + '/tinyjs-fetch-XXXXXX');
+  const dropIo = () => tjs.remove(ioDir, { recursive: true }).catch(() => {});
+  try {
+    const lines = pairs.map(([k, v]) => (String(v).trim() === '' ? k + ';' : k + ': ' + v));
+    await tjs.writeFile(ioDir + '/headers', enc.encode(lines.join('\n') + '\n'));
+    args.push('-H', '@' + ioDir + '/headers');
+    if (body != null) {
+      await tjs.writeFile(ioDir + '/body', typeof body === 'string' ? enc.encode(body) : body);
+      args.push('--data-binary', '@' + ioDir + '/body');
+    }
+  } catch (e) { dropIo(); throw e; }
   args.push('--', url);   // never let a URL parse as a flag
-  const dropBody = () => bodyDir && tjs.remove(bodyDir).catch(() => {});
   let p;
   try {
     p = tjs.spawn(hiddenArgv(args), { stdin: 'ignore', stdout: 'pipe', stderr: 'ignore' });
-  } catch (e) { dropBody(); throw e; }
-  if (bodyDir) p.wait().then(dropBody, dropBody);
+  } catch (e) { dropIo(); throw e; }
+  p.wait().then(dropIo, dropIo);
   if (init.signal) {
     const kill = () => { try { p.kill(); } catch {} };
     init.signal.aborted ? kill() : init.signal.addEventListener('abort', kill);
@@ -213,18 +229,19 @@ if (nativeFetch) globalThis.fetch = async function fetchRepaired(input, init = {
   let url = url0;
   let method = (init.method || 'GET').toUpperCase();
   let body = init.body;
+  let headers = init.headers;
   for (let hop = 0; ; hop++) {
     let rootPath = false;
     try { const u = new URL(url); rootPath = u.pathname === '/' || u.pathname === ''; } catch {}
     let res;
     if (rootPath && await haveCurl()) {
-      res = await curlFetch(url, { ...init, method, body });        // bug A
+      res = await curlFetch(url, { ...init, headers, method, body });        // bug A
     } else {
       try {
-        res = await nativeFetch(url, { ...init, method, body, redirect: 'manual' });
+        res = await nativeFetch(url, { ...init, headers, method, body, redirect: 'manual' });
       } catch (e) {
         if (!(await haveCurl())) throw e;
-        res = await curlFetch(url, { ...init, method, body });      // bug B — no response existed
+        res = await curlFetch(url, { ...init, headers, method, body });      // bug B — no response existed
       }
     }
     const loc = REDIRECT_CODES.has(res.status) ? res.headers.get('location') : null;
@@ -244,10 +261,17 @@ if (nativeFetch) globalThis.fetch = async function fetchRepaired(input, init = {
     const next = new URL(loc, url);
     if (next.protocol !== 'http:' && next.protocol !== 'https:')
       throw new TypeError('redirect to non-http(s) scheme blocked: ' + next.protocol);
+    // credentials stay with the origin they were given to — once stripped
+    // they stay stripped, even if a later hop comes back
+    if (next.origin !== new URL(url).origin) headers = dropHeaders(headers, CROSS_ORIGIN_STRIP);
     url = next.href;
     // 303 always becomes GET; 301/302 downgrade POST like browsers do;
     // 307/308 keep the method and body
-    if (res.status === 303 || ((res.status === 301 || res.status === 302) && method === 'POST')) { method = 'GET'; body = undefined; }
+    if (res.status === 303 || ((res.status === 301 || res.status === 302) && method === 'POST')) {
+      if (method !== 'HEAD') method = 'GET';
+      body = undefined;
+      headers = dropHeaders(headers, BODY_HEADERS);
+    }
   }
 };
 
@@ -897,6 +921,30 @@ function compileApiGate(spec) {
   return fn;
 }
 
+// getUserMedia consent (#24). The launcher grants mic/camera silently only to
+// the app's own pages (file://, plus the frontend dev server in dev) and to
+// origins the manifest EXPLICITLY trusts: an "api.origins" key whose gate
+// allows the pseudo-method "media.camera" / "media.microphone". Top-level
+// lists and an absent "api" never count — a wrapped site or a redirect target
+// must not inherit the device just because the app itself may use it.
+// Everything else gets the engine's per-origin prompt (macOS) or a denial
+// (Linux, which has no prompt). Windows keeps WebView2's own prompt.
+// Wire shape: TINYJS_MEDIA_ORIGINS = "<kind> <pattern>" lines, '*' globs.
+function mediaTrustLines(spec, ownOrigins) {
+  const lines = [];
+  for (const o of ownOrigins) lines.push('camera ' + o, 'microphone ' + o);
+  if (spec && typeof spec === 'object' && !Array.isArray(spec) &&
+      spec.origins && typeof spec.origins === 'object') {
+    for (const [pat, sub] of Object.entries(spec.origins)) {
+      if (/\s/.test(pat)) continue; // can't be an origin; would break the wire
+      const g = compileNameGate(sub);
+      for (const kind of ['camera', 'microphone'])
+        if (!g || g('media.' + kind)) lines.push(kind + ' ' + pat);
+    }
+  }
+  return lines.join('\n');
+}
+
 // Per-app data root: ~/Library/Application Support/<id> (macOS),
 // %APPDATA%\<id> (Windows), or $XDG_DATA_HOME/<id> (Linux).
 function appDataDir(appId) {
@@ -1094,6 +1142,14 @@ export async function createApp({ html, htmlPath, url = null, title = 'tinyjs', 
     if (IS_LINUX && permissions) {
       const media = ['camera', 'microphone'].filter((k) => permissions[k]);
       if (media.length) spawnEnv.TINYJS_MEDIA = media.join(',');
+    }
+    // …and which origins may have it without asking (mediaTrustLines). Set
+    // unconditionally so an inherited value can't widen it.
+    {
+      const own = ['file://'];
+      if (htmlPath && /^https?:\/\//i.test(String(htmlPath)))
+        try { own.push(new URL(String(htmlPath)).origin); } catch {}
+      spawnEnv.TINYJS_MEDIA_ORIGINS = mediaTrustLines(apiAccess, own);
     }
     // Windows built apps: hand the launcher our exe so taskbar pins and the
     // Start-Menu shortcut relaunch the APP — the visible window belongs to
@@ -2217,6 +2273,28 @@ export async function createApp({ html, htmlPath, url = null, title = 'tinyjs', 
     sampler.pending.delete(name);
     for (const w of waiters) { clearTimeout(w.timer); w.resolve(result); }
   }
+  // A page hands sampler.load any path, and on mac/win the host reads it back
+  // through sampler.bytes — so without a check that pair reads ANY file the
+  // user can (#28). Only files that start like audio pass: the container
+  // magics Web Audio / miniaudio decode (RIFF/RF64 WAVE, AIFF, CAF, Ogg,
+  // FLAC, ID3-tagged or raw MPEG/ADTS frames, ISO-BMFF m4a/mp4, EBML webm).
+  async function looksLikeAudio(path) {
+    let f;
+    try {
+      f = await tjs.open(path, 'r');
+      const b = new Uint8Array(12);
+      const n = await f.read(b, 0);
+      if (n < 4) return false;
+      const at = (i, str) => [...str].every((c, j) => b[i + j] === c.charCodeAt(0));
+      return ((at(0, 'RIFF') || at(0, 'RF64')) && at(8, 'WAVE')) ||
+        (at(0, 'FORM') && (at(8, 'AIFF') || at(8, 'AIFC'))) ||
+        at(0, 'caff') || at(0, 'OggS') || at(0, 'fLaC') || at(0, 'ID3') ||
+        (b[0] === 0xff && (b[1] & 0xe0) === 0xe0) ||
+        at(4, 'ftyp') ||
+        (b[0] === 0x1a && b[1] === 0x45 && b[2] === 0xdf && b[3] === 0xa3);
+    } catch { return false; }
+    finally { f?.close().catch(() => {}); }
+  }
   // load(name, path | bytes). Bytes are spilled to the cache dir once and
   // loaded by path from there — the wire never carries sample data, and the
   // mac/win re-arm can replay the load from the file (binary rules in
@@ -2227,6 +2305,8 @@ export async function createApp({ html, htmlPath, url = null, title = 'tinyjs', 
     if (typeof source === 'string') {
       path = source;
       if (!isAbs(path)) path = tjs.cwd + '/' + path;
+      // before the bank entry exists: bytes() reads whatever the bank names
+      if (!(await looksLikeAudio(path))) throw new Error('sampler.load: not an audio file: ' + path);
     } else {
       let bytes = source;
       if (bytes instanceof ArrayBuffer) bytes = new Uint8Array(bytes);
@@ -2318,9 +2398,14 @@ export async function createApp({ html, htmlPath, url = null, title = 'tinyjs', 
   // read-access root) — hand it the bytes once, over the call channel. Not
   // the wire between bridge and launcher, and only on the fallback path;
   // the fast path stays fetch(file://).
-  async function samplerBytes(name) {
+  async function samplerBytes(name, m) {
+    // host-only: the host lives in the main window's page on mac/win, and
+    // Linux mixes natively (no host to feed)
+    if (IS_LINUX || (m?.window || 'main') !== 'main') throw new Error('sampler.bytes: host-only');
     const path = sampler.bank.get(String(name));
     if (!path) throw new Error('sampler: unknown sound');
+    // re-checked at read time: the file can have changed since load()
+    if (!(await looksLikeAudio(path))) throw new Error('sampler: not an audio file');
     return { b64: u8ToB64(await tjs.readFile(path)) };
   }
   const samplerVoice = (id) => ({
@@ -2457,7 +2542,7 @@ export async function createApp({ html, htmlPath, url = null, title = 'tinyjs', 
     // file:// read root.
     'sampler.hostResult': async ({ name, ok, error }) =>
       (samplerResolve(String(name), { ok: !!ok, error }), true),
-    'sampler.bytes': async ({ name }) => samplerBytes(name),
+    'sampler.bytes': async ({ name }, _a, m) => samplerBytes(name, m),
     // Every page announces itself once tiny.js is up. The main window's
     // hello doubles as the sampler re-arm signal on mac/win: a reload wiped
     // the host's decoded bank, so replay it (TODO-audio-sampler.md).
