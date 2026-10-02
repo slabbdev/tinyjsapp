@@ -707,11 +707,18 @@ function wrapperMain({ title, menubar, top, external, panel }) {
       '  // Menu-bar app: no Dock icon (activation in tinyjs.json), the tray\n' +
       '  // icon toggles the window, closing hides instead of quitting.\n' +
       '  app.setHideOnClose(true);\n' +
-      "  // Tray icon: the project's own icon.png (fetched or picked), with its\n" +
-      '  // colors (template:false — pngs would otherwise be monochrome\n' +
-      '  // templates). Falls back to the globe symbol when there is none.\n' +
+      "  // Tray icon: src/tray.png (a copy of the app icon), with its colors\n" +
+      '  // (template:false — pngs would otherwise be monochrome templates).\n' +
+      '  // Resolved next to this module, not the cwd: a packaged app runs\n' +
+      "  // from / and ships src/ but not the project's icon.png. Falls back\n" +
+      '  // to the globe symbol when there is none.\n' +
       "  let trayIcon = 'sf:globe';\n" +
-      "  try { await tjs.stat('icon.png'); trayIcon = 'icon.png'; } catch { }\n" +
+      '  try {\n' +
+      "    let p = decodeURIComponent(new URL('./tray.png', import.meta.url).pathname);\n" +
+      '    if (/^\\/[A-Za-z]:\\//.test(p)) p = p.slice(1); // windows /C:/…\n' +
+      '    await tjs.stat(p);\n' +
+      '    trayIcon = p;\n' +
+      '  } catch { }\n' +
       '  app.tray.set({ icon: trayIcon, template: false });');
   }
   if (top || panel) init.push('  app.setAlwaysOnTop(true);');
@@ -946,7 +953,7 @@ async function loadPsl() {
 
 async function cmdWrap() {
   if (!args[0] || args[0].startsWith('--')) {
-    fail('usage: tinyjs wrap <url> [dir] [--name <name>] [--ua <userAgent>] [--menubar] [--panel] [--top] [--external a.com,b.com] [--origins exact|subdomains|url,…] [--yes] [--force]');
+    fail('usage: tinyjs wrap <url> [dir] [--name <name>] [--ua <userAgent>] [--[no-]menubar] [--[no-]panel] [--[no-]top] [--external a.com,b.com] [--origins exact|subdomains|url,…] [--yes] [--force]');
   }
   const url = /^https?:\/\//.test(args[0]) ? args[0] : 'https://' + args[0];
   let base;
@@ -970,12 +977,23 @@ async function cmdWrap() {
   const regen = force && await exists(dir + '/tinyjs.json');
   if (await exists(dir)) {
     // --force regenerates an existing wrapped project in place: it overwrites
-    // ONLY the files this generator owns (tinyjs.json, src/main.js, icon.png)
-    // and leaves the user's own edits, added files and .git alone.
+    // ONLY the files this generator owns (tinyjs.json, src/main.js, icon.png,
+    // src/tray.png) and leaves the user's own edits, added files and .git alone.
     if (!regen) fail(`'${dir}' already exists (--force overwrites a tinyjs project)`);
     console.log(`==> overwriting ${dir} (generated files only)`);
   }
-  const ua = argVal('--ua');
+  // A re-wrap keeps every choice its flags don't restate: the previous
+  // tinyjs.json (origins, user agent, title, hand-added keys) and the window
+  // modes read back from the previous generated backend. --no-menubar /
+  // --no-panel / --no-top and --external '' turn a carried mode off.
+  let prevCfg = {}, prevMain = '';
+  if (regen) {
+    try { prevCfg = JSON.parse(dec.decode(await tjs.readFile(dir + '/tinyjs.json'))); } catch { }
+    try { prevMain = dec.decode(await tjs.readFile(dir + '/src/main.js')); } catch { }
+  }
+  const flagOr = (flag, prev) =>
+    args.includes('--' + flag) ? true : args.includes('--no-' + flag) ? false : prev;
+  const ua = argVal('--ua') ?? (typeof prevCfg.userAgent === 'string' ? prevCfg.userAgent : null);
   // The probe fetches as a plain Safari; a browser-ish UA keeps CDNs and
   // bot-walls from serving garbage. Only a --ua the user passes reaches the
   // app itself (Windows WebView2 serving Safari-flavored pages would be a
@@ -991,8 +1009,14 @@ async function cmdWrap() {
   const page = await fetchCapped(base.href, probeUA, { timeout: 10000, cap: 2 * 1024 * 1024 });
   if (page !== null) {
     const html = dec.decode(page);
+    // The title becomes the .app name (dist/<title>.app, CFBundleName), so:
+    // keep the site name before a tagline separator ("GitHub · Change is
+    // constant…" → "GitHub", "BBC - Home" → "BBC"), and drop characters a
+    // filename can't hold — the page is third-party, a "/" or ":" in it
+    // would break the build path.
     const raw = decodeEntities((html.match(/<title[^>]*>([\s\S]*?)<\/title>/i)?.[1] ?? '').trim())
-      .replace(/\s+/g, ' ');
+      .replace(/[\u0000-\u001f\u007f/\\:*?"<>|]/g, ' ').replace(/\s+/g, ' ').trim()
+      .split(/\s+[·|•–—-]\s+/)[0].trim().replace(/^\.+/, '');
     title = raw.length > 44 ? raw.slice(0, 44).replace(/\s+\S*$/, '') + '…' : raw || null;
     iconUrl = pickIcon(html, base);
   }
@@ -1042,6 +1066,10 @@ async function cmdWrap() {
       }
       gateNote = ignored ? 'explicit --origins list (some entries ignored)' : 'explicit --origins list';
     }
+  } else if (prevCfg.api?.origins && typeof prevCfg.api.origins === 'object' &&
+             !Array.isArray(prevCfg.api.origins)) {
+    origins = { ...prevCfg.api.origins };
+    gateNote = 'kept from the previous tinyjs.json (pass --origins to change it)';
   } else if (!yes && isTTY && wildcardOrigin) {
     console.log('\nAPI access for this app:');
     console.log(`  [1] ${base.origin} only (recommended)`);
@@ -1079,15 +1107,35 @@ async function cmdWrap() {
     downloads: 'ask',
   };
   if (ua) cfg.userAgent = ua;
-  const menubar = args.includes('--menubar');
+  // Previous window modes, read back from the generated backend's own
+  // markers (each mode emits a distinctive line in wrapperMain).
+  const prevPanel = prevMain.includes('PANEL_W');
+  const menubar = flagOr('menubar', prevMain.includes('app.setHideOnClose(true)'));
   if (args.includes('--panel') && !menubar)
     console.log("==> note: --panel needs --menubar (a panel lives in the tray) — ignoring --panel");
-  const panel = args.includes('--panel') && menubar; // a panel lives in the tray
-  const top = args.includes('--top');
-  const external = (argVal('--external') ?? '')
-    .split(',').map((s) => s.trim().toLowerCase()).filter((s) => s && !s.includes('/'));
+  const panel = flagOr('panel', prevPanel) && menubar; // a panel lives in the tray
+  const top = flagOr('top', !prevPanel && prevMain.includes('app.setAlwaysOnTop(true)'));
+  let prevExternal = [];
+  try { prevExternal = JSON.parse(prevMain.match(/^const EXTERNAL = (\[.*\]);/m)?.[1] ?? '[]'); } catch { }
+  const externalArg = argVal('--external');
+  const external = externalArg === null && !args.includes('--external') ? prevExternal
+    : (externalArg ?? '').split(',').map((s) => s.trim().toLowerCase()).filter((s) => {
+        if (s.includes('/')) console.log(`==> note: --external takes hostnames — ignoring ${s}`);
+        return s && !s.includes('/');
+      });
+  // Keys the user owns once the project exists keep their previous values
+  // (a changed id would also orphan the app's store and settings).
+  const keep = ['title', 'size', 'id', 'version', ...(argVal('--name') ? [] : ['name'])];
+  Object.assign(cfg, { ...prevCfg, ...cfg });
+  for (const k of keep) if (prevCfg[k] !== undefined) cfg[k] = prevCfg[k];
   if (menubar) cfg.activation = 'accessory';
+  else if (cfg.activation === 'accessory') delete cfg.activation;
   if (panel) cfg.chrome = { ...(cfg.chrome ?? {}), frame: false, windowControls: false };
+  else if (prevPanel && cfg.chrome) {
+    delete cfg.chrome.frame;
+    delete cfg.chrome.windowControls;
+    if (!Object.keys(cfg.chrome).length) delete cfg.chrome;
+  }
   // (Studio form state used to persist here as a "studio" key — tinyjs.json
   // only carries what the runtime or CLI reads; Studio keeps its own file.)
   const stamp = await toolVersion();
@@ -1100,12 +1148,13 @@ async function cmdWrap() {
   if (regen && await exists(dir + '/src/main.js')) {
     // The stamp records the hash of the generated body; re-hash the file's
     // own body and compare against it — an edit since generation (or an
-    // unstamped older file) warns before --force overwrites it.
-    const prev = dec.decode(await tjs.readFile(dir + '/src/main.js'));
-    const m = prev.match(/^\/\/ generated by tinyjs wrap \(([0-9a-f]{8})\)\n([\s\S]*)$/);
+    // unstamped older file) is kept as src/main.js.bak, never just lost.
+    const m = prevMain.match(/^\/\/ generated by tinyjs wrap \(([0-9a-f]{8})\)\n([\s\S]*)$/);
     const intact = m && hex8(await crypto.subtle.digest('SHA-256', enc.encode(m[2]))) === m[1];
-    if (!intact)
-      console.log('==> note: src/main.js changed since it was generated — --force overwrites it');
+    if (!intact) {
+      await tjs.writeFile(dir + '/src/main.js.bak', enc.encode(prevMain));
+      console.log('==> note: src/main.js changed since it was generated — your version is in src/main.js.bak');
+    }
   }
   await tjs.makeDir(dir + '/src', { recursive: true });
   await tjs.writeFile(dir + '/tinyjs.json', enc.encode(JSON.stringify(cfg, null, 2) + '\n'));
@@ -1135,6 +1184,9 @@ async function cmdWrap() {
       console.log('==> icon padded to the Apple grid');
     } catch { /* keep the raw icon */ }
   }
+  // The menu-bar backend loads src/tray.png: src/ ships inside the build,
+  // the project root's icon.png does not.
+  if (menubar) await tjs.writeFile(dir + '/src/tray.png', await tjs.readFile(dir + '/icon.png'));
 
   const extra = Object.keys(origins).filter((k) => k !== base.origin);
   console.log(`created ${dir}/
@@ -2098,7 +2150,9 @@ usage:
                       gated API, downloads, popup policy) — [dir],
                       --name <name>, --ua <userAgent>, --menubar,
                       --panel (needs --menubar), --top,
-                      --external a.com,b.com, --force,
+                      --external a.com,b.com, --force (re-wrap in
+                      place; unflagged choices carry over, --no-menubar /
+                      --no-panel / --no-top turn one off),
                       --origins exact|subdomains|url,… (default: exact),
                       --yes (skip the origins prompt)
   tinyjs dev          run the app in the current directory

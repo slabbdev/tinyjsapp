@@ -4,6 +4,33 @@ All notable changes to tinyjs. Versions are git tags (`vX.Y.Z`); a tag push
 builds and publishes the release. The rendered version of this file lives at
 https://tinyjs.app/changelog.
 
+## 0.44.0 — 2026-10-02
+
+- **`tinyjs wrap <url>` turns a website into a desktop app.** One command
+  scaffolds a site wrapper: the site is the app's main window, there's no
+  frontend to write, and everything it generates is ordinary `tinyjs.json`
+  and backend code you can edit afterwards. It fetches the page's title and
+  best icon (apple-touch-icon, then the page's icon links, then
+  `/favicon.ico`, with the PNG pulled out of ICO files), and on macOS pads
+  the icon to Apple's icon grid. The page title is cut at a tagline
+  separator ("GitHub · Change is constant…" becomes "GitHub") and loses any
+  characters a filename can't hold, since it becomes the `.app` name.
+  The `"api"` gate gives the wrapped site's exact origin the `wrapper`
+  preset and every other origin only the window controls (close, minimize,
+  zoom, drag). `--origins subdomains` widens that to the site's registrable
+  domain, using the public suffix list so it never stops at a shared suffix
+  like `co.uk` or `github.io`; `--origins` also takes an explicit list.
+  Popups open as windows (OAuth keeps working) and downloads ask where to
+  save. `--menubar` makes a menu-bar app with no Dock icon, `--panel` (with
+  `--menubar`) a dropdown panel under the menu-bar icon, `--top` keeps the
+  window above others, `--external a.com,b.com` opens those sites in the
+  default browser, and `--ua` sets the user agent. `--force` re-wraps an
+  existing project in place: settings you don't pass flags for carry over,
+  `--no-menubar`, `--no-panel` and `--no-top` turn a mode off, and an
+  edited `src/main.js` is saved as `src/main.js.bak` first. Thanks to
+  [@slabbdev](https://github.com/slabbdev) for the feature
+  ([#20](https://github.com/tarwin/tinyjsapp/pull/20)).
+
 ## 0.43.0 — 2026-10-02
 
 Security fixes. Thanks to [@slabbdev](https://github.com/slabbdev) for the

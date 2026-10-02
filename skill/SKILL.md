@@ -13,7 +13,7 @@ HTTP server, no ports. The page NEVER has system access; everything
 privileged crosses `tiny.api`, which is why anything interpolated into
 `innerHTML` must be escaped.
 
-Current release: 0.43.0. App floors: macOS 15+ — a default build opens only
+Current release: 0.44.0. App floors: macOS 15+ — a default build opens only
 on the build Mac's CPU (`build --arch arm64|x86_64` or `--universal` for the
 other); Windows 10/11 (WebView2); Linux glibc 2.35+ (Ubuntu 22.04 / Debian 12
 / Mint 21 and up).
@@ -36,6 +36,9 @@ tinyjs new <dir>    # scaffold (zero dependencies)
 tinyjs new <dir> --template react-ts|vue-ts|svelte-ts|solid-ts|vanilla-ts|…
                     #   create-vite + tinyjs overlay: HMR dev server in the
                     #   native window, esbuild-bundled TS backend (npm pkgs ok)
+tinyjs wrap <url>   # site wrapper: the site IS the app, origin-gated API
+                    #   (--origins subdomains, --menubar [--panel], --top,
+                    #   --external a.com, --ua, --force re-wraps in place)
 tinyjs dev          # run with hot reload (frontend edits swap in place;
                     #   backend edits restart the process)
 tinyjs build        # dist/<name> binary + dist/<Name>.app (codesigned)

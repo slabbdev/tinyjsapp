@@ -171,6 +171,13 @@
   <section>
 
     <div class="rel">
+      <h2>0.44.0 <span class="date">2026-10-02</span></h2>
+      <ul>
+        <li><b><code>tinyjs wrap &lt;url&gt;</code> turns a website into a desktop app.</b> One command scaffolds a site wrapper: the site is the app's main window, there's no frontend to write, and everything it generates is ordinary <code>tinyjs.json</code> and backend code you can edit afterwards. It fetches the page's title and best icon (apple-touch-icon, then the page's icon links, then <code>/favicon.ico</code>, with the PNG pulled out of ICO files), and on macOS pads the icon to Apple's icon grid. The page title is cut at a tagline separator (“GitHub · Change is constant…” becomes “GitHub”) and loses any characters a filename can't hold, since it becomes the <code>.app</code> name. The <code>"api"</code> gate gives the wrapped site's exact origin the <code>wrapper</code> preset and every other origin only the window controls (close, minimize, zoom, drag). <code>--origins subdomains</code> widens that to the site's registrable domain, using the public suffix list so it never stops at a shared suffix like <code>co.uk</code> or <code>github.io</code>; <code>--origins</code> also takes an explicit list. Popups open as windows (OAuth keeps working) and downloads ask where to save. <code>--menubar</code> makes a menu-bar app with no Dock icon, <code>--panel</code> (with <code>--menubar</code>) a dropdown panel under the menu-bar icon, <code>--top</code> keeps the window above others, <code>--external a.com,b.com</code> opens those sites in the default browser, and <code>--ua</code> sets the user agent. <code>--force</code> re-wraps an existing project in place: settings you don't pass flags for carry over, <code>--no-menubar</code>, <code>--no-panel</code> and <code>--no-top</code> turn a mode off, and an edited <code>src/main.js</code> is saved as <code>src/main.js.bak</code> first. Thanks to <a href="https://github.com/slabbdev">@slabbdev</a> for the feature (<a href="https://github.com/tarwin/tinyjsapp/pull/20">#20</a>).</li>
+      </ul>
+    </div>
+
+    <div class="rel">
       <h2>0.43.0 <span class="date">2026-10-02</span></h2>
       <p>Security fixes. Thanks to <a href="https://github.com/slabbdev">@slabbdev</a> for the reports, each with a runtime repro (<a href="https://github.com/tarwin/tinyjsapp/issues/24">#24</a>, <a href="https://github.com/tarwin/tinyjsapp/issues/27">#27</a>, <a href="https://github.com/tarwin/tinyjsapp/issues/28">#28</a>).</p>
       <ul>
