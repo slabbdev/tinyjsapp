@@ -4,6 +4,37 @@ All notable changes to tinyjs. Versions are git tags (`vX.Y.Z`); a tag push
 builds and publishes the release. The rendered version of this file lives at
 https://tinyjs.app/changelog.
 
+## 0.44.1 — 2026-10-02
+
+Thanks to [@slabbdev](https://github.com/slabbdev)
+([#16](https://github.com/tarwin/tinyjsapp/pull/16),
+[#21](https://github.com/tarwin/tinyjsapp/pull/21)) and
+[@samcharles93](https://github.com/samcharles93)
+([#31](https://github.com/tarwin/tinyjsapp/pull/31)).
+
+- **Windows: a failed self-update no longer leaves the app half-updated.**
+  The update replaces the app's files one by one, and a file locked
+  partway through (Defender, the indexer) stopped it there, leaving some
+  files old and some new ([#13](https://github.com/tarwin/tinyjsapp/issues/13)).
+  Renames now retry a briefly locked file, and if one still can't be
+  replaced, every file already swapped is put back and the update reports
+  that the current version is intact.
+- **The app comes back after a self-update.** On Windows the relaunched
+  app was killed along with the old one as it quit, and on every platform
+  the new instance could find the old one still running and hand off to
+  it, so no app was left open. The relaunch now starts outside the old
+  process on Windows and waits up to 5 seconds for the old instance to
+  exit. An app updating from an older version still runs the old update
+  code that one time, so it won't reopen on its own after that update.
+- **macOS: `tinyjs dev` shows the app's name in the menu bar and the app
+  switcher**, not "launcher-macos". Built `.app`s already did.
+- **openSUSE support.** `setup.sh` prints the zypper packages to install,
+  the README covers openSUSE's package names, and the tray requirement no
+  longer suggests a package openSUSE doesn't have. The installer's
+  WebKitGTK check also stopped failing on systems where `ldconfig` isn't
+  on the user's `PATH` (openSUSE, and others that keep it in `/usr/sbin`)
+  even though WebKitGTK was installed.
+
 ## 0.44.0 — 2026-10-02
 
 - **`tinyjs wrap <url>` turns a website into a desktop app.** One command
