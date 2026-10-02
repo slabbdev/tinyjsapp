@@ -355,13 +355,17 @@ async function copyTree(src, dst) {
 // Windows: a freshly-written or just-closed file can be transiently locked
 // by Defender / the indexer, failing the rename with EPERM even with a
 // single writer — retry briefly before giving up (same posture as the
-// store's rename retry in bridge.js).
+// store's rename retry in bridge.js). Only lock-shaped errors retry: a
+// cross-volume rename (EXDEV) must fall through to the copy at once, or
+// every file of an app installed off the temp dir's drive pays the full
+// backoff.
+const LOCK_CODES = new Set(['EPERM', 'EBUSY', 'EACCES']);
 async function retryLocked(fn) {
   for (let attempt = 0; ; attempt++) {
     try {
       return await fn();
     } catch (e) {
-      if (attempt >= 5) throw e;
+      if (attempt >= 5 || !LOCK_CODES.has(e?.code)) throw e;
       await new Promise((r) => setTimeout(r, 25 * (attempt + 1)));
     }
   }

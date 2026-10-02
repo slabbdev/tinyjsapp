@@ -1203,7 +1203,7 @@ export async function createApp({ html, htmlPath, url = null, title = 'tinyjs', 
     // CFBundleName and never take this path.
     let launcherExe = launcher;
     if (!IS_WIN && !IS_LINUX && title) {
-      const link = workDir + '/' + String(title).replace(/[/\\:]+/g, '') || 'launcher';
+      const link = workDir + '/' + (String(title).replace(/[/\\:]+/g, '') || 'launcher');
       try {
         await tjs.symlink(launcher, link);
         launcherExe = link;
