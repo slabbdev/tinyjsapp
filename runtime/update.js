@@ -449,10 +449,19 @@ async function winSwapDir(src, dst) {
 // resolve the name BEFORE any swap can happen.
 const EXE_NAME = tjs.exePath.replace(/^.*[\\/]/, '');
 
+// Passed to the relaunched app so it waits out the instance that spawned it
+// (still alive, still holding the single-instance pipe — it quits ~250 ms
+// later) instead of handing off to it and exiting. bridge.js checks for it.
+export const RELAUNCH_FLAG = '--tinyjs-relaunched';
+
 export function relaunch(bundle) {
   if (IS_WIN || IS_LINUX) {
-    // The new folder keeps the same exe name as the running app.
-    tjs.spawn([bundle + (IS_WIN ? '\\' : '/') + EXE_NAME],
+    // The new folder keeps the same exe name as the running app. On Windows
+    // a direct tjs.spawn child is killed when this process exits (libuv's
+    // job object), so start it via `launcher --spawn`, which detaches it.
+    const exe = bundle + (IS_WIN ? '\\' : '/') + EXE_NAME;
+    tjs.spawn(IS_WIN ? [bundle + '\\launcher.exe', '--spawn', exe, RELAUNCH_FLAG]
+                     : [exe, RELAUNCH_FLAG],
               { stdin: 'ignore', stdout: 'ignore', stderr: 'ignore' });
     return;
   }

@@ -16,7 +16,7 @@
 //                                                     answers the call itself
 //                         QUIT                        close the window
 
-import { bundlePath, checkForUpdate, installUpdate, relaunch } from './update.js';
+import { bundlePath, checkForUpdate, installUpdate, relaunch, RELAUNCH_FLAG } from './update.js';
 
 const enc = new TextEncoder();
 const dec = new TextDecoder();
@@ -3042,6 +3042,23 @@ export async function createApp({ html, htmlPath, url = null, title = 'tinyjs', 
       ? '\\\\.\\pipe\\tinyjs-app-' + (id || 'tinyjs-app')
       : await linuxInstanceSock(id || 'tinyjs-app');
     let haveInstancePipe = false;
+    // Relaunched by an update: the instance that spawned us still owns the
+    // pipe until it finishes quitting, and handing off to it would leave no
+    // app running at all. Poll (connect, then hang up without a message —
+    // the owner ignores an empty connection) until it lets go. Each probe is
+    // capped: a pipe whose owner is mid-exit can make connect wait 30 s
+    // (measured, libuv's WaitNamedPipe). Past the deadline the old one is
+    // stuck, and the ordinary hand-off below at least activates it.
+    if (instPipe && tjs.args.includes(RELAUNCH_FLAG)) {
+      const deadline = Date.now() + 5000;
+      while (Date.now() < deadline) {
+        const probe = tjs.connect('pipe', instPipe)
+          .then(async (c) => { await c.opened; c.close(); return true; }, () => false);
+        const owned = await Promise.race([probe, new Promise((r) => setTimeout(() => r(true), 500))]);
+        if (!owned) break;
+        await new Promise((r) => setTimeout(r, 50));
+      }
+    }
     if (instPipe) try {
       const conn = await tjs.connect('pipe', instPipe);
       const { writable } = await conn.opened;
