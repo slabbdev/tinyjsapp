@@ -9,7 +9,7 @@ same tinyjs.json, same `tiny.*` api, same commands on all three.
 | webview | WKWebView | WebView2 (Chromium) | WebKitGTK 4.1 |
 | `tinyjs build` output | `dist/<Name>.app` (codesigned) + bare `dist/<name>` | portable `dist/`: `<name>.exe` + `launcher.exe` + `frontend/` | portable `dist/`: backend binary + `launcher` + `icon.png`; per-arch tarballs from `publish` |
 | publish / auto-update | zip + dmg, notarized; per-arch `-macos-<arch>` with `--arch` | `-win.zip`; https+sha256 trust | `-linux-<arch>.tar.gz` × {x86_64, arm64}; `.desktop` self-registers on first run |
-| toolchain to develop tinyjs ITSELF | Xcode CLT, `./setup.sh` | MinGW-w64 g++ (`winget install BrechtSanders.WinLibs.POSIX.UCRT`), `setup.ps1`, `tinyjs.cmd` | `apt install build-essential pkg-config libgtk-3-dev libwebkit2gtk-4.1-dev libayatana-appindicator3-dev libpipewire-0.3-dev`, same `./setup.sh` |
+| toolchain to develop tinyjs ITSELF | Xcode CLT, `./setup.sh` | MinGW-w64 g++ (`winget install BrechtSanders.WinLibs.POSIX.UCRT`), `setup.ps1`, `tinyjs.cmd` | `apt install build-essential pkg-config libgtk-3-dev libwebkit2gtk-4.1-dev libayatana-appindicator3-dev libpipewire-0.3-dev` (Debian/Ubuntu) or `zypper install gcc-c++ make pkgconf-pkg-config gtk3-devel webkitgtk3-devel libayatana-appindicator3-devel pipewire-devel` (openSUSE), same `./setup.sh` |
 
 Works on ALL THREE: the whole bridge (api calls, push events, `tiny.fetch`
 streaming), dev/hot-reload, Vite `devUrl`, multi-window with per-window

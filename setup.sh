@@ -19,13 +19,30 @@ esac
 # ---------------------------------------------------------------- Linux ----
 if [ "$OS" = "Linux" ]; then
   # Build deps: a C++ toolchain + GTK3/WebKitGTK dev packages (AppIndicator
-  # optional — tray support). Debian/Ubuntu:
-  #   sudo apt install build-essential pkg-config libgtk-3-dev \
-  #        libwebkit2gtk-4.1-dev libayatana-appindicator3-dev
+  # optional — tray support). Package names differ per distro:
+  #   Debian/Ubuntu: sudo apt install build-essential pkg-config libgtk-3-dev \
+  #                      libwebkit2gtk-4.1-dev libayatana-appindicator3-dev
+  #   openSUSE:      sudo zypper install gcc-c++ make pkgconf-pkg-config \
+  #                      gtk3-devel webkitgtk3-devel libayatana-appindicator3-devel
+  #                  (WebKitGTK 4.1's dev package is webkitgtk3-devel there —
+  #                  the "3" says GTK3, not an older WebKit; the runtime is
+  #                  libwebkit2gtk-4_1-0.)
+  DEPS_HINT="sudo apt install build-essential pkg-config libgtk-3-dev libwebkit2gtk-4.1-dev libayatana-appindicator3-dev"
+  CMAKE_HINT="sudo apt install cmake ninja-build"
+  if [ -r /etc/os-release ]; then
+    # shellcheck disable=SC1091
+    . /etc/os-release
+    case "${ID:-} ${ID_LIKE:-}" in
+      *suse*)
+        DEPS_HINT="sudo zypper install gcc-c++ make pkgconf-pkg-config gtk3-devel webkitgtk3-devel libayatana-appindicator3-devel"
+        CMAKE_HINT="sudo zypper install cmake ninja"
+        ;;
+    esac
+  fi
   for p in gtk+-3.0 webkit2gtk-4.1; do
     pkg-config --exists "$p" 2>/dev/null || {
       echo "missing dev package: $p" >&2
-      echo "Debian/Ubuntu: sudo apt install build-essential pkg-config libgtk-3-dev libwebkit2gtk-4.1-dev libayatana-appindicator3-dev" >&2
+      echo "install with: $DEPS_HINT" >&2
       exit 1
     }
   done
@@ -50,7 +67,7 @@ if [ "$OS" = "Linux" ]; then
       fi
     fi
     if [ -z "$GOT" ]; then
-      command -v cmake >/dev/null || { echo "building txiki.js needs cmake (sudo apt install cmake ninja-build)" >&2; exit 1; }
+      command -v cmake >/dev/null || { echo "building txiki.js needs cmake ($CMAKE_HINT)" >&2; exit 1; }
       echo "==> building txiki.js $TJS_VERSION from source (a few minutes)"
       rm -rf /tmp/txiki-src-$$
       git clone --depth 1 --branch "$TJS_VERSION" --recurse-submodules --shallow-submodules -j4 \
