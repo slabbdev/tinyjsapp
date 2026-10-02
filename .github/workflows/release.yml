@@ -16,7 +16,7 @@ jobs:
   windows:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Install MinGW-w64
         run: choco install mingw -y --no-progress
@@ -75,7 +75,7 @@ jobs:
           echo "$out"
           case "$out" in "tinyjs $GITHUB_REF_NAME "*) ;; *) echo 'sh wrapper broken'; exit 1;; esac
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         with:
           name: windows-zip
           path: out/tinyjs-windows-x86_64.zip
@@ -100,7 +100,7 @@ jobs:
             arch: arm64
     runs-on: ${{ matrix.runner }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Install build deps
         run: |
@@ -131,7 +131,7 @@ jobs:
 
       - name: Cache txiki.js build
         id: tjs-cache
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: bin/tjs
           # v2: the key is version+arch only, so it does NOT notice the runner
@@ -232,7 +232,7 @@ jobs:
           if echo "$OUT" | grep -q 'FAIL'; then echo 'GUI smoke has failures'; exit 1; fi
           echo "linux GUI smoke OK"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         with:
           name: linux-${{ matrix.arch }}
           path: out/*
@@ -245,7 +245,7 @@ jobs:
     runs-on: macos-26
     needs: [windows, linux]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       # Built WITH on-device AI (tiny.app.ai), which is why this can't be one
       # clang call any more. clang takes `-arch a -arch b` and emits a fat
@@ -323,13 +323,13 @@ jobs:
           done
 
       - name: Fetch Windows zip
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v7
         with:
           name: windows-zip
           path: out
 
       - name: Fetch Linux tarballs
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v7
         with:
           pattern: linux-*
           merge-multiple: true
