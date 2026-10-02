@@ -1428,7 +1428,7 @@ export async function createApp({ html, htmlPath, url = null, title = 'tinyjs', 
     // from a GUI-subsystem app each pop a terminal, so this routes through
     // `launcher --run` (CREATE_NO_WINDOW). Elsewhere it's plain tjs.spawn.
     spawnHidden(args, opts) { return tjs.spawn(hiddenArgv(args), opts); },
-    setTitle(t) { send('TITLE ' + String(t).replace(/\n/g, ' ')); },
+    setTitle(t) { send('TITLE ' + one(t)); },
     // Content size — the page's own box, decorations excluded, the same units
     // tinyjs.json's "size" and getState().width/height use.
     setSize(w, h) { send(`SIZE ${w | 0} ${h | 0}`); },
@@ -2117,7 +2117,7 @@ export async function createApp({ html, htmlPath, url = null, title = 'tinyjs', 
         push: (event, data) =>
           t('EVAL', esc('window.__emit && window.__emit(' + JSON.stringify({ event, data }) + ')')),
         close: () => { if (id !== 'main') send('WINCLOSE ' + one(id)); },
-        setTitle: (v) => t('TITLE', String(v).replace(/\n/g, ' ')),
+        setTitle: (v) => t('TITLE', one(v)),
         setSize: (w2, h2) => t('SIZE', `${w2 | 0} ${h2 | 0}`),
         setPosition: (x, y) => { t('WINOP', `pos ${x | 0} ${y | 0}`); rescueNote(id, 'pos'); },
         ensureOnScreen: () => t('WINOP', 'onscreen'),
