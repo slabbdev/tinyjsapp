@@ -1137,7 +1137,8 @@ await <b>tiny.app.permissions.request</b>('accessibility');
     the app's own pages — the launcher answers WebKit's per-origin prompt
     itself, so users see the one system dialog naming your app. Any other
     origin (a wrapped site, a page it redirects to, a third-party iframe) gets
-    the engine's prompt naming that site on macOS and Windows, and a denial on
+    the engine's own permission prompt on macOS and Windows (on macOS, an
+    iframe inside your page is asked about under your app's name), and a denial on
     Linux — unless an <code>"api"</code> <code>origins</code> key allows
     <code>media.microphone</code> / <code>media.camera</code> for it, e.g.
     <code>"https://meet.example.com": ["media.*", "notify"]</code>. A packaged app must

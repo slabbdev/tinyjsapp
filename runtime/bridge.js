@@ -930,7 +930,9 @@ function compileApiGate(spec) {
 // Everything else gets the engine's per-origin prompt (macOS) or a denial
 // (Linux, which has no prompt). Windows keeps WebView2's own prompt.
 // Wire shape: TINYJS_MEDIA_ORIGINS = "<kind> <pattern>" lines, '*' globs.
-function mediaTrustLines(spec, ownOrigins) {
+// A packaged macOS app's launcher is started by LaunchServices, not by us, so
+// `tinyjs build` writes the same lines into Info.plist (TinyjsMediaOrigins).
+export function mediaTrustLines(spec, ownOrigins) {
   const lines = [];
   for (const o of ownOrigins) lines.push('camera ' + o, 'microphone ' + o);
   if (spec && typeof spec === 'object' && !Array.isArray(spec) &&

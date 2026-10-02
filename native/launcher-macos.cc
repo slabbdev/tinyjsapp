@@ -2403,7 +2403,8 @@ static void do_perm(webview_t, void *arg) {
 // page it redirected to, a third-party iframe) gets WebKit's own prompt
 // naming its origin, unless the manifest explicitly trusts that origin
 // (#24). The bridge hands the trusted set over as TINYJS_MEDIA_ORIGINS
-// ("<kind> <pattern>" lines, see mediaTrustLines); file:// is always in it.
+// ("<kind> <pattern>" lines, see mediaTrustLines) — or, in a packaged .app,
+// as the TinyjsMediaOrigins plist key; file:// is always trusted.
 // Both the origin WebKit passes and the requesting frame's own origin must
 // be trusted. The vendored delegate class is registered at runtime, so the
 // handler (macOS 12+ selector, never called on older systems) is added here
@@ -2437,8 +2438,13 @@ static bool media_trusted(const std::string &kind, const std::string &origin) {
   if (origin == "file://") return true;
   static std::vector<std::pair<std::string, std::string>> rules = [] {
     std::vector<std::pair<std::string, std::string>> r;
+    // dev: the bridge's env; a packaged .app: Info.plist (LaunchServices
+    // starts the launcher, so the bridge's env never reaches it)
     const char *env = getenv("TINYJS_MEDIA_ORIGINS");
-    std::string all = env ? env : "", line;
+    NSString *plist = env ? nil
+                          : [[NSBundle mainBundle]
+                                objectForInfoDictionaryKey:@"TinyjsMediaOrigins"];
+    std::string all = env ? env : plist.length ? [plist UTF8String] : "", line;
     for (size_t i = 0; i <= all.size(); i++) {
       if (i < all.size() && all[i] != '\n') { line += all[i]; continue; }
       size_t sp = line.find(' ');

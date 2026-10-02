@@ -2295,25 +2295,32 @@ window still opening, for: a 777 dir we own, a symlink to a dir we own, a
 plain file, and (made via a root docker container, no sudo on the VM) a dir
 owned by `nobody` at 700 and at 777. No socket was created in any refused dir.
 
-## Security fixes #24 / #27 / #28 (2026-09-30) — macOS sampler + fetch verified only
+## Security fixes #24 / #27 / #28 (2026-09-30) — verified on all three 2026-10-02
 
 Branch `fix/security-24-27-28`. #28 (sampler refuses non-audio paths, a real
 WAV still loads/reads back/plays) and #27 (no headers in curl's argv, temp dir
 removed, credentials dropped on a cross-origin redirect, kept on same-origin)
-were run on macOS. The media-capture change (#24) compiled and ran on macOS
-but nobody has yet watched a prompt appear; the Linux launcher change has not
-even been compiled here.
+were run on macOS. #24 then verified on a built macOS app, Linux (VM) and
+Windows (unchanged, WebView2 prompts) on 2026-10-02.
 
-- [ ] **macOS #24, own page** — a BUILT app with
+- [x] **macOS #24, own page** — a BUILT app with
   `"permissions": {"microphone": "why"}`: `getUserMedia({audio:true})` from
   its own `file://` page → only the TCC prompt (first run), then granted.
-- [ ] **macOS #24, foreign origin** — same app, page redirects to
-  `http://127.0.0.1:<port>` (Sam's repro in #24) → WebKit's prompt naming
-  that origin appears; Deny → `NotAllowedError`.
-- [ ] **macOS #24, trusted origin** — add
+  *(2026-10-02, built t24 test app: granted, TCC already allowed.)*
+- [x] **macOS #24, foreign origin** — same app, page redirects to
+  `http://127.0.0.1:<port>` (Sam's repro in #24) → WebKit's prompt appears;
+  Deny → `NotAllowedError`. *(2026-10-02: a cross-origin iframe in the own
+  page AND the redirected page each got WebKit's sheet; Don't Allow →
+  `NotAllowedError` for both. Note the iframe's sheet reads "Allow "t24" to
+  use your microphone?" — WebKit names the TOP-LEVEL page, which for
+  file:// is the app, so it doesn't say which site inside is asking.)*
+- [x] **macOS #24, trusted origin** — add
   `"api": {"origins": {"http://127.0.0.1:<port>": ["media.*"]}}` → no WebKit
-  prompt. Also a cross-origin iframe inside the own page → prompt (the
-  requesting frame's origin is checked, not just the main frame's).
+  prompt. *(2026-10-02: first attempt still prompted — a packaged .app's
+  launcher is started by LaunchServices, so the bridge's
+  TINYJS_MEDIA_ORIGINS env never reached it. Fixed with the
+  TinyjsMediaOrigins plist key written by `tinyjs build`; rerun: iframe and
+  redirected page both granted with no sheet.)*
 - [x] **Linux #24** — compiles; own `file://` page granted when declared;
   a redirected-to foreign origin → `NotAllowedError`; trusted via
   `api.origins` → granted; enumerateDevices labels follow the same rule.

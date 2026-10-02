@@ -1104,6 +1104,14 @@ async function cmdBuild() {
     extraKeys += `
   <key>TinyjsDownloads</key>     <string>${escXml(cfg.downloads)}</string>`;
   }
+  {
+    // Origins that get mic/camera without WebKit's per-site prompt (#24):
+    // LaunchServices starts the launcher, not the bridge, so the env the
+    // bridge sets in dev can't reach it — the plist carries the same lines.
+    const { mediaTrustLines } = await import(TOOL_DIR + 'runtime/bridge.js');
+    extraKeys += `
+  <key>TinyjsMediaOrigins</key>  <string>${escXml(mediaTrustLines(cfg.api ?? null, ['file://']))}</string>`;
+  }
   if (cfg.popups) {
     // "popups": external | window | deny (window.open / target=_blank).
     extraKeys += `

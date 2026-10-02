@@ -529,6 +529,21 @@ TODO-verify.md's probe section. Launcher rebuilt from source first, as always.
    opener. So the design is answerable; it is WebView2's message path out of
    that document that isn't.
 
+## Mic/camera follow the origin keys too (#24, 0.43.0)
+
+getUserMedia never crosses the bridge, so the `"api"` gate couldn't see it:
+macOS granted every origin silently (only the TCC prompt, which names the
+app) and Linux granted whatever `"permissions"` declared to every page. Now
+the bridge derives the trusted set from the same `origins` keys
+(`mediaTrustLines`: own `file://` + the dev server, plus any key whose gate
+allows `media.camera` / `media.microphone`; presets and top-level lists never
+count) and hands it to the launcher as `TINYJS_MEDIA_ORIGINS` (a packaged .app: the
+TinyjsMediaOrigins plist key, since LaunchServices starts its launcher). macOS checks
+the origin WebKit passes AND the requesting frame's; untrusted → WebKit's
+prompt. Linux checks the main frame's URI (frame-blind, like CALL stamping);
+untrusted → denied. Windows unchanged (WebView2 prompts per origin). Same
+rule as the gate: the origin is the engine's, never the page's.
+
 ## Remaining
 - **`window` popups keep default chrome** — no `win.open`-style chrome
   options beyond the window features' width/height/x/y (all platforms).

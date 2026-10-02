@@ -544,7 +544,7 @@ await tiny.app.permissions.request('accessibility');  // prompt/open Settings
 // mic/camera: getUserMedia() just works on the app's own pages — the
 // launcher grants WebKit's per-origin prompt so users only see the system
 // dialog naming your app. Any other origin (a wrapped site, a redirect, a
-// third-party iframe) gets the engine's prompt naming that site (macOS,
+// third-party iframe) gets the engine's own permission prompt (macOS,
 // Windows) or a denial (Linux) unless an "api.origins" key allows
 // "media.microphone" / "media.camera" for it.
 // Speech-to-text isn't a tiny.* call at all — the page's own
