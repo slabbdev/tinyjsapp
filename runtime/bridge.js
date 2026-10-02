@@ -1196,7 +1196,20 @@ export async function createApp({ html, htmlPath, url = null, title = 'tinyjs', 
       spawnEnv.WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS = extra;
     }
     const spawnOpts = { stderr: 'inherit', env: spawnEnv };
-    proc = tjs.spawn([launcher, pagePath, sockPath, title, size, version], spawnOpts);
+    // macOS: a bare (non-bundled) binary takes its OS-facing app name — menu
+    // bar, cmd-tab — from the executable's file name. In dev that reads
+    // "launcher". Exec through a symlink named after the app instead, so the
+    // real title shows everywhere the OS names the app; bundled .apps carry
+    // CFBundleName and never take this path.
+    let launcherExe = launcher;
+    if (!IS_WIN && !IS_LINUX && title) {
+      const link = workDir + '/' + String(title).replace(/[/\\:]+/g, '') || 'launcher';
+      try {
+        await tjs.symlink(launcher, link);
+        launcherExe = link;
+      } catch { }                     // fall back to the plain launcher
+    }
+    proc = tjs.spawn([launcherExe, pagePath, sockPath, title, size, version], spawnOpts);
 
     cleanup = async () => {
       if (!IS_WIN) await tjs.remove(sockPath).catch(() => {}); // pipes aren't files
