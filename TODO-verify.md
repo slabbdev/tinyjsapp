@@ -2314,13 +2314,29 @@ even been compiled here.
   `"api": {"origins": {"http://127.0.0.1:<port>": ["media.*"]}}` → no WebKit
   prompt. Also a cross-origin iframe inside the own page → prompt (the
   requesting frame's origin is checked, not just the main frame's).
-- [ ] **Linux #24** — compiles; own `file://` page granted when declared;
+- [x] **Linux #24** — compiles; own `file://` page granted when declared;
   a redirected-to foreign origin → `NotAllowedError`; trusted via
   `api.origins` → granted; enumerateDevices labels follow the same rule.
+  Seen 2026-10-02 (arm64 VM, real mic + v4l2 cams): own page mic+cam
+  granted, labels shown; `location.href` → `http://127.0.0.1:<port>` got
+  `NotAllowedError` for both and empty labels; with that origin keyed to
+  `["media.microphone", "notify"]` the mic was granted (audio label shown)
+  and the camera still refused.
 - [ ] **Windows #27** — curl.exe accepts `-H @file` (needs 7.55+) on a
   root-path request with headers; the `%TEMP%\tinyjs-fetch-*` dir is gone
   afterwards.
-- [ ] **Linux #27** — same root-path request through curl.
+- [x] **Linux #27** — same root-path request through curl. Seen
+  2026-10-02: a 4s root-path GET with Authorization/Cookie — `ps` showed
+  only `-H @/tmp/tinyjs-fetch-XXXX/headers`; dir 0700, gone after every
+  request; server got the headers, a POST body, and an empty `x-empty;`.
+  Redirects: cross-origin (curl hop and native hop) dropped auth/cookie and
+  kept `x-keep`; same-origin kept them; 303 POST→GET dropped Content-Type;
+  cross-origin bounce back to the first origin stayed stripped.
 - [ ] **Windows #28** — sampler loads a WAV from outside the page's read
   root (exercises `sampler.bytes`); `/etc/passwd`-style path refused.
-- [ ] **Linux #28** — native sampler still loads WAV/OGG/MP3.
+- [x] **Linux #28** — native sampler still loads WAV/MP3. Seen
+  2026-10-02: WAV, ID3 MP3 and raw-frame MP3 load and play; `/etc/passwd`
+  and a text file refused; `sampler.bytes` → host-only. OGG was never
+  decodable on Linux (miniaudio without stb_vorbis: "can't decode
+  (wav/mp3/flac)") — not a regression. An MP3 with leading junk (e.g. a
+  `----` header) is now refused by path though it still decodes from bytes.
