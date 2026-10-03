@@ -2437,9 +2437,13 @@ pass; a wrong x86_64 pin → `::error::` and exit 1.
   `bin\tjs.exe`, no txiki-* left in %TEMP%.)*
 - [ ] **Windows CI #26** — the next tag's Windows job goes through the new
   `setup.ps1` check; the macOS job through release.yml's. Both green.
-- [ ] **Linux #30.4** — `rm bin/tjs && ./setup.sh` (prebuilt download) and
+- [x] **Linux #30.4** — `rm bin/tjs && ./setup.sh` (prebuilt download) and
   `rm bin/tjs && TJS_BUILD=1 ./setup.sh` (source build) both still produce a
   working `bin/tjs`; no `/tmp/tmp.*` dir left afterwards.
+  *(2026-10-02, Ubuntu ARM VM: prebuilt download → exit 0, `tjs` runs
+  (26.6.0), no `/tmp/tmp.*`. Source build in an `ubuntu:22.04` arm64
+  container (no cmake on the VM host) with gcc-12 → built in
+  `/tmp/tmp.Mlsl3We3X6/txiki-src`, exit 0, `tjs` runs, dir gone after.)*
 
 **#29.4 — built Windows/Linux apps ignore inherited env knobs.** `bridge.js`
 decides `built` from `bundlePath()` (exe isn't `tjs` and has a `launcher`
@@ -2475,12 +2479,21 @@ swaps the page (store write + self-quit). Nothing below has run.
   loads the override page; F12 devtools still there in dev.
   *(2026-10-02: override page loaded and wrote its store marker; F12 sent via
   SendKeys to the dev window → "DevTools - file:///…/index.html" appeared.)*
-- [ ] **Linux #29.4** — built app: `TINYJS_HTML=/abs/other.html ./dist/<name>`
+- [x] **Linux #29.4** — built app: `TINYJS_HTML=/abs/other.html ./dist/<name>`
   → own page; `TINYJS_INJECT="document.title='pwned'"` → unchanged;
   `TINYJS_MEDIA=camera,microphone` on an app that declares no permissions →
   `getUserMedia` still `NotAllowedError`. Tray icon, WM class / .desktop
   match and the icon still right (TINYJS_APP_ID/ICON now always ours).
-- [ ] **Linux #29.4, dev regression** — `TINYJS_HTML=… tinyjs dev` unchanged.
+  *(2026-10-02, Ubuntu ARM VM, throwaway self-driving app. Control under
+  `tinyjs dev` with INJECT (`window.__pwned=1` + load→title) and
+  MEDIA=camera,microphone → title "pwned", mic granted. Built, with HTML,
+  INJECT, MEDIA, `TINYJS_APP_ID=evil.id`, `TINYJS_ICON=/nonexistent.png` all
+  set → own page, title unchanged, `NotAllowedError`, WM_CLASS
+  `com.example.vfy`, .desktop Icon/StartupWMClass ours; tray item over D-Bus
+  Id `com.example.vfy`, icon from `dist/`, Active. Launcher's
+  /proc/environ: only `TINYJS_LAUNCHER_DEBUG` survived of the inherited set.)*
+- [x] **Linux #29.4, dev regression** — `TINYJS_HTML=… tinyjs dev` unchanged.
+  *(2026-10-02: override page loaded and wrote its store marker.)*
 
 **#30.7 — bridge odds and ends** (pure bridge.js; nothing launcher-side).
 - *Fetch streams keyed by window.* Every page counts `tiny.fetch` stream ids
@@ -2501,13 +2514,18 @@ swaps the page (store write + self-quit). Nothing below has run.
   `x` 1, `__proto__` not in the file or in `all()`; FIXED → `x` null,
   `__proto__` stored, saved and listed like any key.
 
-- [ ] **Windows + Linux #30.7** — the two-window stream test (each window gets
+- [x] **Windows + Linux #30.7** — the two-window stream test (each window gets
   its own full body) and a `tiny.store` round trip; same bridge code, so this
   is a smoke check, not a new path.
   **Windows seen 2026-10-02** (dev and built): main + a `win.open` child,
   both `{stream:true}` from a local node server, 300 000 bytes each →
   `300000:A` / `300000:B`; store round trip ok; `set('__proto__',{x:1})` →
-  `get('x')` null, `__proto__` listed in `all()` and saved. Linux still open.
+  `get('x')` null, `__proto__` listed in `all()` and saved.
+  **Linux seen 2026-10-02** (Ubuntu ARM VM, python http.server, readers
+  paced 30 ms/chunk so both streams overlap): OLD bridge (284bcce^) →
+  `177120:A` / `155648:B` (both cut short) and `get('x')` 1, `__proto__`
+  missing from `all()`; FIXED, dev and built → `300000:A` / `300000:B`,
+  `get('x')` null, `__proto__` stored and listed.
 
 ## Per-app WebView2 profile on Windows (#29.1, `fix/29-webview2-profile`, 2026-10-02) — Windows verified 2026-10-02
 
