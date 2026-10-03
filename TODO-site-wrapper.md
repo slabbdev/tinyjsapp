@@ -352,8 +352,18 @@ wrapurl for `"url"`; a python static server for cross-origin targets and a
 - **Origin stamping** — CALLs carry the origin as the second element, from
   the sending window's URI (`origin_from_uri`, same shape as the other
   two). Frame-blind, unlike macOS's frameInfo and WebView2's Source: the
-  shim only injects top-frame so every ordinary call IS main-frame, but a
-  subframe's hand-rolled postMessage would be attributed to the top frame.
+  shim only injects top-frame so every ordinary call IS main-frame, but the
+  `tiny` handler answers every frame. Until #18 (fixed 2026-10-02), a
+  cross-origin subframe that hand-built the untokened form `|<seq>:<payload>`
+  was accepted and stamped with the TOP frame's origin, so it inherited that
+  origin's gate. Untokened calls are now dropped once the window holds a
+  token, which only a top-frame document can have: a subframe can't read
+  the top frame's `__TINY_TOK`, and the launcher sees no subframe commits
+  to mint one from. Net: subframes on Linux get no bridge at all, where
+  macOS/Windows gate them on their own origin. Per-frame tokens (shim in
+  all frames) were rejected: the token's origin would have to come from
+  the frame itself, and the UI process has nothing attested to check it
+  against.
 - **popups "window" needed one settings change** —
   `javascript_can_open_windows_automatically` is FALSE by default on
   WebKitGTK (macOS defaults it TRUE), so a second gesture-less
@@ -658,8 +668,15 @@ const T = window.webkit.messageHandlers.tiny;
 T.postMessage('ffffffff-dead-beef-dead-ffffffffffff|9901:' + payload); // forged token
 T.postMessage(String(window.__TINY_TOK).replace(/^./, 'a') + '|9903:' + payload); // mutated
 T.postMessage('|9902:' + payload);   // untokened: the pre-token fallback shape
-// PASS = the first two produce NO `CALL` line at all; the third is stamped
-// with the page's REAL origin and denied by the gate.
+// PASS = no `CALL` line at all for any of them. (Before #18 the third was
+// processed and stamped with the main frame's origin, which was the hole:
+// see the next probe.)
+
+// A cross-origin IFRAME inside a trusted wrapped page posts the untokened
+// shape: it can't read parent.__TINY_TOK (SecurityError), but the handler
+// is registered for every frame. PASS = dropped ("dropped an untokened call
+// from a tokened window" under TINYJS_DEBUG). FAIL (the pre-#18 build) =
+// `CALL main:9902 [..., "<the TOP frame's origin>"]`, gated as the top frame.
 
 // A popup must not be able to speak as its opener.
 try { t = window.opener.__TINY_TOK; } catch (e) {}   // PASS = SecurityError
@@ -667,6 +684,9 @@ try { t = window.opener.__TINY_TOK; } catch (e) {}   // PASS = SecurityError
 // The shared-manager mark must be lifted when the LAST popup closes: post
 // an untokened message while one is alive (PASS = dropped) and again after
 // they are all closed (PASS = processed, then denied on the real origin).
+// Since #18 a tokened window drops untokened calls anyway, so this probe
+// now passes either way and needs a window with no token yet to mean
+// anything. The mark is still correct; this probe just can't see it now.
 
 // Find state must not survive a navigation: same term, N matches, searched
 // on page A and again on a fresh page — PASS = activeMatch 1, not 2.

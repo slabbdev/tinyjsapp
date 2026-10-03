@@ -34,6 +34,16 @@ The last two items of [#29](https://github.com/tarwin/tinyjsapp/issues/29).
   user who connected first received the app's traffic. The window process
   now proves itself with a one-time secret before the app sends anything,
   and connections without it are hung up.
+- **Linux: an iframe can no longer borrow its page's `"api"` access.**
+  WebKitGTK doesn't say which frame a message came from, so the launcher
+  relies on a per-page token that only the top frame holds. Messages
+  without a token were still accepted (a fallback for pages that never got
+  one) and stamped with the top frame's origin. So a cross-origin iframe
+  inside a trusted wrapped site could post a hand-built message and be
+  gated as that site. Untokened messages are now dropped once the window
+  has a token, which leaves the fallback only for a window whose first
+  page hasn't loaded yet
+  ([#18](https://github.com/tarwin/tinyjsapp/issues/18)).
 
 ## 0.45.0 — 2026-10-02
 

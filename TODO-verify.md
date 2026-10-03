@@ -407,6 +407,20 @@ which is precisely how this got through the first time.
       left `WRAPKIT-MAIN`. Controls both ways in the same run: the honest call
       is denied, an allowed one (`store.set`) resolves, and the popup on 8124
       gets `0` denied.
+- [x] **Hostile subframe can't borrow the top frame's gate, Linux (#18)** —
+      **fixed and seen 2026-10-02**, before/after on the same harness. A
+      wrapped app at `http://127.0.0.1:8123` (`origins: {8123: "wrapper"}`)
+      embeds a cross-origin iframe from `:8124`. The iframe reads
+      `parent.__TINY_TOK` and gets `SecurityError`, then posts the untokened
+      `'|9902:'+store.set` and `'|9903:'+win.setTitle` to
+      `webkit.messageHandlers.tiny`. Pre-fix launcher (HEAD b52cd84) produced
+      `CALL main:9902 [..., "http://127.0.0.1:8123"]` and `CALL main:9903 …`,
+      the iframe stamped as the trusted top frame, with no denial logged.
+      Fixed launcher: both dropped ("dropped an untokened call from a tokened
+      window"), no `CALL` line. The top frame's own `tiny.store.set` worked
+      in both runs.
+      (The untokened-processed result in the entry above was correct for
+      its date and is now intentionally dropped.)
 - [x] **Navigate-then-call race, Linux** — **denied, seen 2026-08-06**, with
       a caveat that matters more than the tick. `location.href` was pointed at
       a 3s-slow page on the TRUSTED origin and 24 `win.setTitle` calls were

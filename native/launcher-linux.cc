@@ -442,7 +442,9 @@ static std::string tiny_shim_js(const std::string& winid) {
     // Last resort: a page that never gets a token (a document the launcher
     // never saw commit) falls back to the untokened form, which the launcher
     // accepts only from a window whose content manager it knows is not
-    // shared. Without this an unusual load would hang the app's own boot.
+    // shared AND that has never been handed a token (otherwise the sender
+    // is a subframe — issues/18). Without this an unusual load would hang
+    // the app's own boot.
     "  setTimeout(() => { giveUp = true; window.__tinyFlush(); }, 1500);\n"
     "  window.__invoke = (payload) => new Promise((res, rej) => {\n"
     "    const s = ++seq; pending[s] = { res, rej };\n"
@@ -515,18 +517,33 @@ static void on_script_message(WebKitUserContentManager* ucm, WebKitJavascriptRes
     if (getenv("TINYJS_DEBUG"))
       fprintf(stderr, "tinyjs: dropped an untokened call on a shared content manager\n");
     return;
+  } else if (g_win_token.count(winid)) {
+    // The manager's owner HAS a committed document holding a token, so an
+    // untokened message isn't from that document — the shim there sends the
+    // token. What's left is a SUBFRAME: the handler is registered for every
+    // frame, the signal carries no frame, and a cross-origin iframe can't
+    // read the top frame's __TINY_TOK. Accepting it would stamp the iframe
+    // with the TOP frame's origin and hand it that origin's "api" gate
+    // (issues/18). The fallback stays only for a window that has never had
+    // a document commit — before which no subframe can exist either.
+    if (getenv("TINYJS_DEBUG"))
+      fprintf(stderr, "tinyjs: dropped an untokened call from a tokened window "
+                      "(a subframe)\n");
+    return;
   }
 
   // Last element: the calling page's origin, for the bridge's "api"
   // origin sub-gates. WebKitGTK's script-message signal carries no frame
   // info (unlike WKScriptMessage.frameInfo or WebView2's Source), so this
   // is the sending window's MAIN-FRAME origin — attested by the UI process
-  // (page JS can't spoof it) but frame-blind: a subframe's hand-rolled
-  // postMessage is attributed to the top frame. The tiny shim only injects
-  // top-frame, so every ordinary call IS main-frame; caveat in
-  // TODO-site-wrapper.md. Tokened calls carry their document's committed
-  // origin; only the untokened fallback (a document the launcher never saw
-  // commit, on a manager it knows is not shared) reads the view live.
+  // (page JS can't spoof it) but frame-blind. The tiny shim only injects
+  // top-frame, and a subframe can't hold a token (it can't read the top
+  // frame's, and the launcher sees no subframe commits to mint one from),
+  // so subframes have no way in: untokened calls are dropped once the
+  // window has a token, above. Tokened calls carry their document's
+  // committed origin; only the untokened fallback (a window with no
+  // committed document yet, on a manager it knows is not shared) reads the
+  // view live.
   if (!have_origin) {
     WebKitWebView* wv = wv_for(from);
     origin = origin_from_uri(wv ? webkit_web_view_get_uri(wv) : nullptr);
