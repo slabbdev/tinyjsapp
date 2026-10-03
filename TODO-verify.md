@@ -2398,7 +2398,7 @@ for the pipe to free instead of handing off.
   version's update.js, so an app built before this fix still won't come back
   after updating to one built with it. Expected, one time; worth seeing.
 
-## Hardening batch 1 (`fix/hardening-1`, 2026-10-02) — macOS run, Linux + Windows UNRUN
+## Hardening batch 1 (`fix/hardening-1`, 2026-10-02) — verified on all three, shipped v0.45.0
 
 Easy items from #26/#29/#30. What ran on the Mac is recorded per item;
 everything else below is written and unwatched.
@@ -2435,8 +2435,12 @@ pass; a wrong x86_64 pin → `::error::` and exit 1.
   (d94fac3d…), launcher compiles, exit 0. Pin edited to e94fac3d… → "has
   sha256 d94fac3d…, expected e94fac3d… - refusing to install it", exit 1, no
   `bin\tjs.exe`, no txiki-* left in %TEMP%.)*
-- [ ] **Windows CI #26** — the next tag's Windows job goes through the new
+- [x] **Windows CI #26** — the next tag's Windows job goes through the new
   `setup.ps1` check; the macOS job through release.yml's. Both green.
+  *(2026-10-02, v0.45.0 run 37081800489: Windows logged "downloading
+  txiki.js v26.6.0 (windows-x86_64)" — a fresh download, not a cache — and
+  passed the pin; the macOS "Assemble per-arch tarballs" step passed both
+  arch pins. All four build jobs + release green, all assets published.)*
 - [x] **Linux #30.4** — `rm bin/tjs && ./setup.sh` (prebuilt download) and
   `rm bin/tjs && TJS_BUILD=1 ./setup.sh` (source build) both still produce a
   working `bin/tjs`; no `/tmp/tmp.*` dir left afterwards.
