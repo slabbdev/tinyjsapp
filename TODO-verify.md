@@ -2627,7 +2627,18 @@ there, 2 not ours → single instance off), and `--open` uses the same check.
   (sibling with the same prefix) all reject.
 - [ ] **macOS, win.open** — same probes from a built .app (frontend lives in
   Contents/Resources): legit pages still open; escapes reject.
-- [ ] **Linux, win.open** — same probes from a built app.
+- [x] **Linux, win.open** — **seen 2026-10-02** on a built app (frontend
+  extracted to `/tmp/tjs-<hash>/frontend/`) and in `tinyjs dev`. These open
+  and render: `sub.html`, `./sub.html`, absolute-inside, and `x/../sub.html`.
+  These reject: a `../` walk to a planted file outside, the absolute outside
+  path, `file://…`, `javascript:`, a `<frontend>-evil/sub.html` sibling, a
+  `x/..\..\…` backslash walk, `//abs` and a NUL. Before/after in dev,
+  same probes on HEAD~1's bridge: all 12 OPENED, and four of them really
+  loaded the planted outside page (walk, absolute, `//abs` as `file:////…`,
+  sibling). Linux single-instance hand-off (restructured in the same
+  commit) also re-checked on a built app: a second launch with a path exits
+  0 in 0.06 s, one launcher stays, and `onOpenFiles` gets the path with its
+  space intact.
 - [ ] **Any OS, regression** — kitchen-sink's four `tiny.win.open` windows
   (calllog, ball, traypanel, inspector) and matcha's settings still open.
 - [x] **Windows, session-pipe token** — the bridge↔launcher pipe
