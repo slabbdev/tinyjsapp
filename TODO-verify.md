@@ -2426,11 +2426,15 @@ swapped for another valid x86_64 Mach-O (#26's repro) → build refused
 install", nothing in `bin/`. release.yml's loop run locally: both arches
 pass; a wrong x86_64 pin → `::error::` and exit 1.
 
-- [ ] **Windows #26** — `Remove-Item bin\tjs.exe`, run `setup.ps1` → installs
+- [x] **Windows #26** — `Remove-Item bin\tjs.exe`, run `setup.ps1` → installs
   as before. Edit one char of the `windows-x86_64` line in
   `runtime\txiki.sha256`, delete `bin\tjs.exe` again → setup stops with
   "refusing to install it" and no `bin\tjs.exe`. Restore the line. (The file
   checks out CRLF on Windows; `-split` treats the `\r` as whitespace.)
+  *(2026-10-02, Windows 11: clean run downloads, hash matches the pin
+  (d94fac3d…), launcher compiles, exit 0. Pin edited to e94fac3d… → "has
+  sha256 d94fac3d…, expected e94fac3d… - refusing to install it", exit 1, no
+  `bin\tjs.exe`, no txiki-* left in %TEMP%.)*
 - [ ] **Windows CI #26** — the next tag's Windows job goes through the new
   `setup.ps1` check; the macOS job through release.yml's. Both green.
 - [ ] **Linux #30.4** — `rm bin/tjs && ./setup.sh` (prebuilt download) and
@@ -2450,7 +2454,7 @@ untouched (`built` is always false there; packaged .apps read plist keys).
 macOS, seen 2026-10-02: bridge imports; `TINYJS_HTML=… tinyjs dev` still
 swaps the page (store write + self-quit). Nothing below has run.
 
-- [ ] **Windows #29.4** — `tinyjs build` any app, then from cmd, one at a time
+- [x] **Windows #29.4** — `tinyjs build` any app, then from cmd, one at a time
   against `dist\<name>.exe`:
   `set TINYJS_HTML=C:\abs\other.html` → the app's OWN page loads;
   `set TINYJS_INJECT=document.title='pwned'` → title unchanged;
@@ -2458,8 +2462,19 @@ swaps the page (store write + self-quit). Nothing below has run.
   `curl http://127.0.0.1:9222/json` refused while the app is up;
   `set TINYJS_DEBUG=open` → no devtools. Then the same app still updates,
   relaunches and single-instances (TINYJS_APP_EXE is set by us, not inherited).
-- [ ] **Windows #29.4, dev regression** — `TINYJS_HTML=… tinyjs dev` still
+  *(2026-10-02, Windows 11, a throwaway self-driving app. Control first: the
+  same INJECT (`addEventListener('load',…title='pwned')` — a bare
+  document.title assignment is overwritten by `<title>`), WEBVIEW2 and
+  DEBUG=open vars under `tinyjs dev` → 9222 answered 200, a DevTools window
+  opened, the page saw title "pwned". Built exe with all four set at once →
+  own page loaded (override page's store marker untouched), 9222 refused, no
+  DevTools window, title unchanged. Second launch handed off in 0.2 s, one
+  launcher left. `publish`ed 1.0.1 + local manifest: installed 1.0.0
+  updated and 1.0.1 came back up and ran its page.)*
+- [x] **Windows #29.4, dev regression** — `TINYJS_HTML=… tinyjs dev` still
   loads the override page; F12 devtools still there in dev.
+  *(2026-10-02: override page loaded and wrote its store marker; F12 sent via
+  SendKeys to the dev window → "DevTools - file:///…/index.html" appeared.)*
 - [ ] **Linux #29.4** — built app: `TINYJS_HTML=/abs/other.html ./dist/<name>`
   → own page; `TINYJS_INJECT="document.title='pwned'"` → unchanged;
   `TINYJS_MEDIA=camera,microphone` on an app that declares no permissions →
@@ -2489,8 +2504,12 @@ swaps the page (store write + self-quit). Nothing below has run.
 - [ ] **Windows + Linux #30.7** — the two-window stream test (each window gets
   its own full body) and a `tiny.store` round trip; same bridge code, so this
   is a smoke check, not a new path.
+  **Windows seen 2026-10-02** (dev and built): main + a `win.open` child,
+  both `{stream:true}` from a local node server, 300 000 bytes each →
+  `300000:A` / `300000:B`; store round trip ok; `set('__proto__',{x:1})` →
+  `get('x')` null, `__proto__` listed in `all()` and saved. Linux still open.
 
-## Per-app WebView2 profile on Windows (#29.1, `fix/29-webview2-profile`, 2026-10-02) — UNBUILT
+## Per-app WebView2 profile on Windows (#29.1, `fix/29-webview2-profile`, 2026-10-02) — Windows verified 2026-10-02
 
 Stock webview keys the WebView2 user-data folder on the exe name, and every
 tinyjs app's window belongs to `launcher.exe` (dev: `launcher-win.exe`) — so
@@ -2507,15 +2526,23 @@ localStorage are gone once after updating. The old shared folder is left in
 place. `tinyjs dev` now also rebuilds launcher-win.exe when win32_edge.hh
 changes. Not compiled anywhere yet (no MinGW on the Mac).
 
-- [ ] **Windows, builds** — `setup.ps1` (or `tinyjs dev`, which now rebuilds
+- [x] **Windows, builds** — `setup.ps1` (or `tinyjs dev`, which now rebuilds
   on the header change) compiles cleanly.
-- [ ] **Windows, folder** — run an app (dev, then built) → `%APPDATA%\<app-id>\WebView2\EBWebView`
+- [x] **Windows, folder** — run an app (dev, then built) → `%APPDATA%\<app-id>\WebView2\EBWebView`
   appears; nothing new written under `%APPDATA%\launcher.exe` /
   `launcher-win.exe`.
-- [ ] **Windows, isolation** — two apps with different ids: app A
+- [x] **Windows, isolation** — two apps with different ids: app A
   `localStorage.setItem('k','A')`, app B reads `localStorage.getItem('k')` →
   null. Both running at the same time open fine.
-- [ ] **Windows, persistence** — app A's value survives a restart, and a
+- [x] **Windows, persistence** — app A's value survives a restart, and a
   `win.open` second window of app A sees it (same profile per app).
-- [ ] **Windows, update** — a built app self-updates and relaunches with its
+- [x] **Windows, update** — a built app self-updates and relaunches with its
   profile intact (same id → same folder).
+  *(All five seen 2026-10-02, Windows 11: setup.ps1 compiled the patched
+  header cleanly. Dev run created `%APPDATA%com.example.probeaWebView2EBWebView`;
+  newest file under `%APPDATA%launcher.exe` / `launcher-win.exe` unchanged
+  after dev, built and updated runs. probea and probeb running at once:
+  probeb read `k` → null while probea's restart read `probea`, and its
+  `win.open` child read `probea` too. The built exe read the value dev
+  wrote (shared folder). Self-update 1.0.0 → 1.0.1 from a local manifest:
+  the relaunched 1.0.1 page read `k` = `probea`.)*
