@@ -1216,7 +1216,10 @@ async function ensureLauncherFresh() {
   const exe = TOOL_DIR + 'native/' +
     (IS_WIN ? 'launcher-win.exe' : IS_LINUX ? 'launcher-linux' : 'launcher-macos');
   const srcs = IS_WIN
-    ? ['native/launcher-win.cc', 'runtime/tiny.js']
+    // win32_edge.hh carries tinyjs patches (env options, origin queue,
+    // per-app profile) — an edit there must rebuild too.
+    ? ['native/launcher-win.cc', 'runtime/tiny.js',
+       'native/include/webview/detail/backends/win32_edge.hh']
     : IS_LINUX
       ? ['native/launcher-linux.cc', 'runtime/tiny.js']
       : ['native/launcher-macos.cc', 'runtime/tiny.js'];
@@ -1855,10 +1858,28 @@ async function needLipo(why) {
   if (!(await haveLipo())) fail(why + ' needs lipo — install the Command Line Tools (xcode-select --install)');
 }
 
+async function sha256Of(p) {
+  const d = new Uint8Array(await crypto.subtle.digest('SHA-256', await tjs.readFile(p)));
+  return [...d].map((x) => x.toString(16).padStart(2, '0')).join('');
+}
+
+// Pinned sha256 of a txiki release's tjs binary (runtime/txiki.sha256).
+async function txikiPin(ver, arch) {
+  const key = `${ver}/txiki-macos-${arch}`;
+  const lines = dec.decode(await tjs.readFile(TOOL_DIR + 'runtime/txiki.sha256')).split('\n');
+  const hit = lines.map((l) => l.trim().split(/\s+/)).find(([h, k]) => k === key && /^[0-9a-f]{64}$/.test(h));
+  if (!hit) fail(`no pinned sha256 for ${key} in runtime/txiki.sha256 — add it before building with this txiki version`);
+  return hit[0];
+}
+
 // txiki.js for one arch, downloaded from the same release URL setup.sh and
-// release.yml use, cached per version so repeat builds stay offline.
+// release.yml use, cached per version so repeat builds stay offline. The
+// cache is user-writable and its exe ends up bundled and codesigned into the
+// app, so it's checked against the pinned hash on download AND every reuse
+// (#26) — an arch check alone accepts any Mach-O an attacker drops there.
 async function fetchTxiki(arch) {
   const ver = 'v' + tjs.version;
+  const want = await txikiPin(ver, arch);
   const cache = tjs.env.HOME + '/Library/Caches/tinyjs/txiki-' + ver;
   const exe = `${cache}/tjs-${arch}`;
   if (!(await exists(exe))) {
@@ -1868,10 +1889,17 @@ async function fetchTxiki(arch) {
     await run(['curl', '-fSsL', '-o', zip,
                `https://github.com/saghul/txiki.js/releases/download/${ver}/txiki-macos-${arch}.zip`]);
     await run(['unzip', '-q', '-o', zip, '-d', cache]);
+    const got = await sha256Of(`${cache}/txiki-macos-${arch}/tjs`);
+    if (got !== want) {
+      await run(['rm', '-rf', zip, `${cache}/txiki-macos-${arch}`]);
+      fail(`downloaded txiki.js ${ver} (${arch}) has sha256 ${got}, expected ${want} — refusing to bundle it`);
+    }
     // mv last: the cached exe only exists once it's complete.
     await run(['mv', `${cache}/txiki-macos-${arch}/tjs`, exe]);
     await run(['rm', '-rf', zip, `${cache}/txiki-macos-${arch}`]);
   }
+  const got = await sha256Of(exe);
+  if (got !== want) fail(`${exe} has sha256 ${got}, expected ${want} — it was modified after download; delete it and rebuild`);
   if (!(await macArchsOf(exe)).includes(arch)) fail(`${exe} is not an ${arch} binary — delete it and rebuild`);
   return exe;
 }

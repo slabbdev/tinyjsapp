@@ -873,6 +873,20 @@ private:
     }
     wchar_t userDataFolder[MAX_PATH];
     PathCombineW(userDataFolder, dataPath, currentExeName);
+    // tinyjs patch: a per-app profile. Stock keys it on the exe name, and
+    // every tinyjs app's window belongs to launcher.exe — so all of them
+    // shared one profile: localStorage (file:// is one origin under
+    // --allow-file-access-from-files), cookies, IndexedDB, permissions (#29).
+    // The bridge passes %APPDATA%\<app-id>\WebView2; unset keeps stock.
+    {
+      wchar_t own[MAX_PATH];
+      DWORD n = GetEnvironmentVariableW(L"TINYJS_WEBVIEW2_DATA", own, MAX_PATH);
+      if (n > 0 && n < MAX_PATH) {
+        SHCreateDirectoryExW(nullptr, own, nullptr); // parents too; exists = fine
+        lstrcpynW(userDataFolder, own, MAX_PATH);
+      }
+    }
+    // end tinyjs patch
 
     m_com_handler = new webview2_com_handler(
         wnd, cb,

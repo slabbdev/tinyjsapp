@@ -310,6 +310,12 @@ jobs:
             curl -fsSL -o /tmp/tjs-$ARCH.zip \
               "https://github.com/saghul/txiki.js/releases/download/${TJS_VERSION}/txiki-macos-$ARCH.zip"
             unzip -q -o /tmp/tjs-$ARCH.zip -d /tmp/tjs-$ARCH
+            # Pinned hash (runtime/txiki.sha256, #26): every user's install
+            # ships this binary, so a swapped upstream asset must stop here.
+            WANT="$(awk -v k="$TJS_VERSION/txiki-macos-$ARCH" '$2 == k { print $1 }' runtime/txiki.sha256)"
+            GOT="$(shasum -a 256 "/tmp/tjs-$ARCH/txiki-macos-$ARCH/tjs" | cut -d' ' -f1)"
+            [ -n "$WANT" ] || { echo "::error::no pinned sha256 for $TJS_VERSION/txiki-macos-$ARCH (got $GOT)"; exit 1; }
+            [ "$GOT" = "$WANT" ] || { echo "::error::txiki $ARCH sha256 $GOT, expected $WANT"; exit 1; }
 
             STAGE=/tmp/stage-$ARCH/tinyjs
             mkdir -p "$STAGE/bin" "$STAGE/native"

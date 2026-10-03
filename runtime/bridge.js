@@ -57,7 +57,9 @@ const hiddenArgv = (args) => (runPrefix ? [...runPrefix, ...args] : args);
 async function readyHiddenArgv() {
   if (!IS_WIN || runPrefix || runPrefixTried) return;
   runPrefixTried = true;
-  const cand = tjs.env.TINYJS_LAUNCHER || dirOf(tjs.exePath) + '/launcher.exe';
+  // A built app never takes its launcher from the env (#29, see createApp).
+  const envLauncher = (await bundlePath()) ? null : tjs.env.TINYJS_LAUNCHER;
+  const cand = envLauncher || dirOf(tjs.exePath) + '/launcher.exe';
   try {
     await tjs.stat(cand);
     runPrefix = [cand, '--run'];
@@ -965,10 +967,15 @@ function makeStore(appId) {
   const dir = appDataDir(appId);
   const path = dir + '/store.json';
   let data = null;
+  // A null-prototype object, so every key is just a key: on a plain {},
+  // get('constructor') answered Object's own function and set('__proto__', v)
+  // swapped the store's prototype instead of storing anything (#30).
   async function load() {
     if (data) return data;
-    try { data = JSON.parse(dec.decode(await tjs.readFile(path))); }
-    catch { data = {}; }
+    let parsed = null;
+    try { parsed = JSON.parse(dec.decode(await tjs.readFile(path))); } catch {}
+    data = Object.create(null);
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) Object.assign(data, parsed);
     return data;
   }
   // Persistence is best-effort: the in-memory value is always updated, and a
@@ -1035,7 +1042,14 @@ export async function createApp({ html, htmlPath, url = null, title = 'tinyjs', 
   //    LaunchServices-registered process gives it deep links, file-open events,
   //    and single-instancing.
   //  - spawn (dev + bare binary): we create the socket and spawn the launcher.
-  const attachPath = tjs.env.TINYJS_SOCKET;
+  // A built Windows/Linux app runs as built: the TINYJS_* env knobs are dev
+  // plumbing (cli.js sets them), and honoring inherited ones let whatever
+  // started the app swap its page (TINYJS_HTML), its launcher, inject script,
+  // widen media/read access, or hand WebView2 flags like
+  // --remote-debugging-port (#29). Only attach is macOS-.app plumbing, so it
+  // is ignored there too.
+  const built = (IS_WIN || IS_LINUX) && !!(await bundlePath());
+  const attachPath = built ? null : tjs.env.TINYJS_SOCKET;
   let proc = null;
   let readable, writable;
   let pagePath = null;
@@ -1048,7 +1062,7 @@ export async function createApp({ html, htmlPath, url = null, title = 'tinyjs', 
   } else {
     // Launcher: explicit option > env override > next to the executable.
     const launcherName = IS_WIN ? 'launcher.exe' : 'launcher';
-    let launcher = launcherPath || tjs.env.TINYJS_LAUNCHER;
+    let launcher = launcherPath || (built ? null : tjs.env.TINYJS_LAUNCHER);
     if (!launcher && (await exists(exeDir + launcherName))) launcher = exeDir + launcherName;
     if (!launcher || !(await exists(launcher))) {
       throw new Error('tinyjs launcher binary not found (looked at: ' + (launcher || exeDir + launcherName) + ')');
@@ -1068,7 +1082,7 @@ export async function createApp({ html, htmlPath, url = null, title = 'tinyjs', 
     //  - htmlPath: the real file is handed to the launcher, so sibling css/js/
     //    images load relatively (multi-file frontends); RELOAD re-reads disk
     //  - html string: materialized into the private workDir
-    const overridePath = tjs.env.TINYJS_HTML;
+    const overridePath = built ? null : tjs.env.TINYJS_HTML;
     if (url && !overridePath) {
       // "url": the main window IS a remote page (site wrappers) — nothing to
       // materialize; the launcher navigates straight there (the same branch
@@ -1093,6 +1107,13 @@ export async function createApp({ html, htmlPath, url = null, title = 'tinyjs', 
     // readAccess widens the page's file:// read root (same, via the env in
     // dev / the TinyjsReadAccess plist key in packaged apps).
     const spawnEnv = { ...tjs.env };
+    // Built: drop every inherited knob before setting our own (see `built`).
+    // TINYJS_LAUNCHER_DEBUG stays — Windows drag diagnostics, logging only.
+    if (built) {
+      for (const k of Object.keys(spawnEnv)) {
+        if (/^(tinyjs|webview2)_/i.test(k) && !/^tinyjs_launcher_debug$/i.test(k)) delete spawnEnv[k];
+      }
+    }
     if (activation === 'accessory') spawnEnv.TINYJS_ACTIVATION = 'accessory';
     // Windows: a transparent main window must drop its GDI redirection
     // bitmap AT CREATION (stale white shows through a late-cleared webview
@@ -1161,6 +1182,12 @@ export async function createApp({ html, htmlPath, url = null, title = 'tinyjs', 
     // launcher.exe, which can't start on its own, so a default pin would be
     // dead on next launch. Dev spawns set nothing (nothing worth pinning).
     if (IS_WIN && (await bundlePath())) spawnEnv.TINYJS_APP_EXE = tjs.exePath;
+    // Windows: each app gets its own WebView2 profile next to its store.json.
+    // Stock WebView2 keys the profile on the exe name, and every tinyjs app's
+    // window is launcher.exe — so all of them shared cookies, localStorage
+    // (file:// is one origin here), IndexedDB and permissions (#29). No
+    // migration from the old shared %APPDATA%\launcher.exe: apps start fresh.
+    if (IS_WIN) spawnEnv.TINYJS_WEBVIEW2_DATA = (appDataDir(id) + '/WebView2').replace(/\//g, '\\');
     // Linux: the app id names the WM class (window ↔ .desktop matching) and
     // the notification identity. Dev sets it from the CLI; built apps here.
     if (IS_LINUX && id && !spawnEnv.TINYJS_APP_ID) spawnEnv.TINYJS_APP_ID = id;
@@ -1412,7 +1439,7 @@ export async function createApp({ html, htmlPath, url = null, title = 'tinyjs', 
     // from a GUI-subsystem app each pop a terminal, so this routes through
     // `launcher --run` (CREATE_NO_WINDOW). Elsewhere it's plain tjs.spawn.
     spawnHidden(args, opts) { return tjs.spawn(hiddenArgv(args), opts); },
-    setTitle(t) { send('TITLE ' + String(t).replace(/\n/g, ' ')); },
+    setTitle(t) { send('TITLE ' + one(t)); },
     // Content size — the page's own box, decorations excluded, the same units
     // tinyjs.json's "size" and getState().width/height use.
     setSize(w, h) { send(`SIZE ${w | 0} ${h | 0}`); },
@@ -2101,7 +2128,7 @@ export async function createApp({ html, htmlPath, url = null, title = 'tinyjs', 
         push: (event, data) =>
           t('EVAL', esc('window.__emit && window.__emit(' + JSON.stringify({ event, data }) + ')')),
         close: () => { if (id !== 'main') send('WINCLOSE ' + one(id)); },
-        setTitle: (v) => t('TITLE', String(v).replace(/\n/g, ' ')),
+        setTitle: (v) => t('TITLE', one(v)),
         setSize: (w2, h2) => t('SIZE', `${w2 | 0} ${h2 | 0}`),
         setPosition: (x, y) => { t('WINOP', `pos ${x | 0} ${y | 0}`); rescueNote(id, 'pos'); },
         ensureOnScreen: () => t('WINOP', 'onscreen'),
@@ -2196,9 +2223,12 @@ export async function createApp({ html, htmlPath, url = null, title = 'tinyjs', 
   // page. Small responses come back whole (base64 in the RET); with
   // { stream: true } the body stays open and the page pulls it chunk-by-chunk
   // (fetch.pull), so an endless source (internet radio) streams with natural
-  // backpressure and never buffers unbounded. Keyed by a page-supplied id and
-  // cancelled by fetch.cancel or when the owner window closes.
-  const fetchStreams = new Map(); // id -> { reader, win }
+  // backpressure and never buffers unbounded. Keyed by the CALLING window plus
+  // the page-supplied id: every page counts f1, f2… from scratch, so a bare id
+  // let two windows' streams collide and one window pull (or cancel) another's
+  // body (#30). Cancelled by fetch.cancel or when the owner window closes.
+  const fetchStreams = new Map(); // '<win>\n<id>' -> { reader, win }
+  const streamKey = (m, id) => (m?.window || 'main') + '\n' + String(id);
   // tiny.audioTap: one native tap per app; `audioTapOwner` is the window that
   // started it, so closing that window tears the tap down (like fetchStreams).
   let audioTapOwner = null;
@@ -2219,10 +2249,10 @@ export async function createApp({ html, htmlPath, url = null, title = 'tinyjs', 
     for (let i = 0; i < bin.length; i++) u8[i] = bin.charCodeAt(i);
     return u8;
   };
-  function cancelFetchStream(id) {
-    const s = fetchStreams.get(id);
+  function cancelFetchStream(key) {
+    const s = fetchStreams.get(key);
     if (!s) return;
-    fetchStreams.delete(id);
+    fetchStreams.delete(key);
     try { s.reader.cancel(); } catch {}
   }
   async function doFetch(p, _a, m) {
@@ -2241,20 +2271,24 @@ export async function createApp({ html, htmlPath, url = null, title = 'tinyjs', 
     };
     if (!p.stream) return { ...head, bodyB64: u8ToB64(new Uint8Array(await res.arrayBuffer())) };
     // The page pulls chunks on demand; keep the reader alive under its id.
-    fetchStreams.set(p.id, { reader: res.body.getReader(), win: m?.window || 'main' });
+    // A reloaded page reuses ids — drop the stream it left behind first.
+    const key = streamKey(m, p.id);
+    cancelFetchStream(key);
+    fetchStreams.set(key, { reader: res.body.getReader(), win: m?.window || 'main' });
     return { ...head, streaming: true };
   }
-  async function pullFetchStream({ id }) {
-    const s = fetchStreams.get(id);
+  async function pullFetchStream({ id }, _a, m) {
+    const key = streamKey(m, id);
+    const s = fetchStreams.get(key);
     if (!s) return { done: true };
     let r;
     try {
       r = await s.reader.read();
     } catch (e) {
-      fetchStreams.delete(id);
+      fetchStreams.delete(key);
       throw e; // surfaces as an error on the page's ReadableStream
     }
-    if (r.done) { fetchStreams.delete(id); return { done: true }; }
+    if (r.done) { fetchStreams.delete(key); return { done: true }; }
     return { done: false, bodyB64: u8ToB64(r.value) };
   }
 
@@ -2459,7 +2493,7 @@ export async function createApp({ html, htmlPath, url = null, title = 'tinyjs', 
   const builtins = {
     fetch: doFetch,
     'fetch.pull': pullFetchStream,
-    'fetch.cancel': async ({ id }) => (cancelFetchStream(id), true),
+    'fetch.cancel': async ({ id }, _a, m) => (cancelFetchStream(streamKey(m, id)), true),
     ping: async () => 'pong',
     log: async ({ msg }) => (console.log('[web]', msg), true),
     quit: async () => (app.quit(), true),
