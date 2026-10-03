@@ -2613,12 +2613,29 @@ there, 2 not ours → single instance off), and `--open` uses the same check.
   exits 0. `--handoff` against a bare tjs listener delivers
   `{"activate":true,"paths":["C:\x y\ü.md"]}` byte for byte (Unicode argv
   intact). No listener → exit 1.
-- [ ] **Windows, squatter** — needs a SECOND local account: as user B, create
-  `\.\pipe\tinyjs-app-<id>-<A's name>` with an Everyone-write DACL, then as
-  A launch the app → console says "held by another user", app runs with no
-  single instance, B's pipe receives nothing; `launcher --open` exits 2 and
-  starts nothing. Not run: the code path is fail-closed by construction but
-  has only been read, not watched.
+- [x] **Windows, squatter** — create
+  `\.\pipe\tinyjs-app-<id>-<A's name>` as another user with an
+  Everyone-write DACL, then as A launch the app → console says "held by
+  another user", app runs with no single instance, the squatter's pipe
+  receives nothing; `launcher --open` exits 2 and starts nothing.
+  *(2026-10-02, built app `com.example.sqtest` from HEAD. No second account
+  needed: SYSTEM is "another user" to the SID check. The squatter ran as
+  SYSTEM via a one-off scheduled task: a .NET NamedPipeServerStream with
+  Everyone ReadWrite and unlimited instances, logging every connection and
+  every byte. Everyone-WRITE matters: under the default DACL (others
+  read-only) the launcher's write-open gets ACCESS_DENIED and exits 2 before
+  the SID compare ever runs. One instance isn't enough either: the bridge's
+  empty probe takes it and the hand-off then reads PIPE_BUSY → exit 1, so
+  you'd see no "held by" line. The app was launched from an elevated shell
+  as tarwin, so OpenProcess on the SYSTEM server succeeds and EqualSid is
+  what refused. Results: "held by another user" printed. The app ran its
+  page through to the page's own `quit` call, the same as an unsquatted
+  control run. The squatter logged exactly two connections per launch
+  (bridge probe + `--handoff`), both 0 bytes. `launcher --open <pipe> <exe>
+  C:\Windows\win.ini` exited 2, delivered 0 bytes, and started no app
+  process. Not covered: a NON-elevated A, where OpenProcess on a SYSTEM
+  process fails and the "can't open the server" branch refuses instead. It's
+  the same fail-closed return, just not seen.)*
 - [x] **Windows, win.open** — built app, page-side probes: `sub.html`,
   `./sub.html`, absolute-inside (both slash styles) open and render;
   `../…/Windows/win.ini`, `x/..\..\…`, `C:/Windows/win.ini`,
