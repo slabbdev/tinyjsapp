@@ -4,9 +4,11 @@ All notable changes to tinyjs. Versions are git tags (`vX.Y.Z`); a tag push
 builds and publishes the release. The rendered version of this file lives at
 https://tinyjs.app/changelog.
 
-## Unreleased
+## 0.46.0 — 2026-10-02
 
-The last two items of [#29](https://github.com/tarwin/tinyjsapp/issues/29).
+Security fixes. Thanks to [@slabbdev](https://github.com/slabbdev)
+for the reports ([#18](https://github.com/tarwin/tinyjsapp/issues/18),
+[#29](https://github.com/tarwin/tinyjsapp/issues/29)).
 
 - **A page's `win.open` stays inside the app.** `tiny.win.open` took any
   absolute path for `page`, and the `"wrapper"` preset hands `win.*` to the

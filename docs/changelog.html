@@ -171,6 +171,17 @@
   <section>
 
     <div class="rel">
+      <h2>0.46.0 <span class="date">2026-10-02</span></h2>
+      <p>Security fixes. Thanks to <a href="https://github.com/slabbdev">@slabbdev</a> for the reports (<a href="https://github.com/tarwin/tinyjsapp/issues/18">#18</a>, <a href="https://github.com/tarwin/tinyjsapp/issues/29">#29</a>).</p>
+      <ul>
+        <li><b>A page's <code>win.open</code> stays inside the app.</b> <code>tiny.win.open</code> took any absolute path for <code>page</code>, and the <code>"wrapper"</code> preset hands <code>win.*</code> to the wrapped site. Every launcher lets <code>file://</code> pages read other files, so a hostile page could download an HTML file and then open it as a privileged <code>file://</code> window that reads the disk. From a page, <code>page</code> must now be an http(s) URL or a file inside the frontend directory. <code>../</code> walks, other absolute paths, UNC paths and <code>file:</code>/<code>javascript:</code> URLs are refused with an error. Backend <code>app.openWindow</code> is unchanged. All platforms.</li>
+        <li><b>Windows: the single-instance pipe belongs to the user.</b> It was <code>\\.\pipe\tinyjs-app-&lt;id&gt;</code>, the same name for every user on the machine, with Windows' default permissions. Other users could connect to read it, and a user who created the name first would receive a second launch's file paths and deep links (OAuth callbacks included). The pipe is now per user (<code>tinyjs-app-&lt;id&gt;-&lt;user&gt;</code>), locked to that user and SYSTEM with network access denied. A second launch or a registered URL/file handler hands over only to a pipe whose server runs as the same user. If another user holds the name, single instance turns off, matching Linux since 0.42.2 (#12). URL schemes and file types re-register with the new name on first launch.</li>
+        <li><b>Windows: the app only talks to its own window process.</b> The private pipe between an app and its window has a random name, but anyone on the machine can list pipe names and connect to read. The app took the first connection to arrive as its window and sent it everything, so another user who connected first received the app's traffic. The window process now proves itself with a one-time secret before the app sends anything, and connections without it are hung up.</li>
+        <li><b>Linux: an iframe can no longer borrow its page's <code>"api"</code> access.</b> WebKitGTK doesn't say which frame a message came from, so the launcher relies on a per-page token that only the top frame holds. Messages without a token were still accepted (a fallback for pages that never got one) and stamped with the top frame's origin. So a cross-origin iframe inside a trusted wrapped site could post a hand-built message and be gated as that site. Untokened messages are now dropped once the window has a token, which leaves the fallback only for a window whose first page hasn't loaded yet (<a href="https://github.com/tarwin/tinyjsapp/issues/18">#18</a>).</li>
+      </ul>
+    </div>
+
+    <div class="rel">
       <h2>0.45.0 <span class="date">2026-10-02</span></h2>
       <p>Security and robustness fixes. Thanks to <a href="https://github.com/slabbdev">@slabbdev</a> for the reports (<a href="https://github.com/tarwin/tinyjsapp/issues/26">#26</a>, <a href="https://github.com/tarwin/tinyjsapp/issues/29">#29</a>, <a href="https://github.com/tarwin/tinyjsapp/issues/30">#30</a>).</p>
       <ul>
