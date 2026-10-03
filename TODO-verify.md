@@ -2625,8 +2625,15 @@ there, 2 not ours → single instance off), and `--open` uses the same check.
   `C:\Windows\win.ini`, `file:///C:/…`, `C:Windows/…`,
   `\localhost\C$\…`, `javascript:`, and `<frontend>-evil/sub.html`
   (sibling with the same prefix) all reject.
-- [ ] **macOS, win.open** — same probes from a built .app (frontend lives in
+- [x] **macOS, win.open** — same probes from a built .app (frontend lives in
   Contents/Resources): legit pages still open; escapes reject.
+  *(2026-10-02, built .app launched via `open`: `sub.html`, `./sub.html`,
+  absolute-inside and `x/../sub.html` opened AND rendered (each child wrote
+  its window id to the store); `../…/etc/hosts`, `x/..\..\..\sub.html`,
+  `/etc/hosts`, `file:///etc/hosts`, `javascript:`, `<frontend>-evil/sub.html`
+  and a NUL-suffixed name all refused. The packaged app's frontendDir is the
+  real Resources/app/frontend (entry.js resolves it from import.meta.url),
+  so attach mode doesn't null it out.)*
 - [x] **Linux, win.open** — **seen 2026-10-02** on a built app (frontend
   extracted to `/tmp/tjs-<hash>/frontend/`) and in `tinyjs dev`. These open
   and render: `sub.html`, `./sub.html`, absolute-inside, and `x/../sub.html`.
@@ -2641,6 +2648,10 @@ there, 2 not ours → single instance off), and `--open` uses the same check.
   space intact.
 - [ ] **Any OS, regression** — kitchen-sink's four `tiny.win.open` windows
   (calllog, ball, traypanel, inspector) and matcha's settings still open.
+  *(Read, not run: every page-side call passes a bare filename from its own
+  frontend — `calllog.html`, `ball.html`, `inspector.html`, matcha's
+  `settings.html` — the same shape as the macOS `sub.html` probe that
+  opened. Still worth clicking through once.)*
 - [x] **Windows, session-pipe token** — the bridge↔launcher pipe
   (`tinyjs-XXXXXX`) had the same default DACL, and the bridge took the FIRST
   connection as its launcher. Now the bridge puts 32 random bytes in
