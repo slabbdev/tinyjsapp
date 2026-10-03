@@ -4,6 +4,52 @@ All notable changes to tinyjs. Versions are git tags (`vX.Y.Z`); a tag push
 builds and publishes the release. The rendered version of this file lives at
 https://tinyjs.app/changelog.
 
+## 0.45.0 — 2026-10-02
+
+Security and robustness fixes. Thanks to [@slabbdev](https://github.com/slabbdev)
+for the reports ([#26](https://github.com/tarwin/tinyjsapp/issues/26),
+[#29](https://github.com/tarwin/tinyjsapp/issues/29),
+[#30](https://github.com/tarwin/tinyjsapp/issues/30)).
+
+- **Windows: each app has its own browser profile.** WebView2 names its
+  data folder after the executable, and every tinyjs app's window belongs
+  to `launcher.exe`, so all tinyjs apps on a machine shared one profile:
+  cookies, IndexedDB, site permissions and `localStorage`. Because an
+  app's own pages all count as one origin there, two apps saving
+  `localStorage.setItem('settings', …)` overwrote each other. Each app now
+  keeps its profile in `%APPDATA%\<app-id>\WebView2`. **Nothing is
+  carried over:** after updating, Windows apps start with an empty
+  profile, so wrapped sites ask you to log in again and page
+  `localStorage` starts empty. `tiny.store` is unaffected.
+- **Built Windows and Linux apps ignore tinyjs's dev environment
+  variables.** A built app passed its whole environment on to the
+  launcher, so whatever started it could replace its page
+  (`TINYJS_HTML`), inject script, widen camera/microphone or file access,
+  or add WebView2 browser flags such as a remote-debugging port. Built
+  apps now drop every inherited `TINYJS_*` and `WEBVIEW2_*` variable and
+  use only their manifest. `tinyjs dev` and macOS are unchanged.
+- **Streaming `tiny.fetch` in two windows at once works.** Each page
+  numbers its streams from 1, so two windows streaming at the same time
+  used the same id: the first window's body stopped after its first
+  chunk, and any window could read or cancel another's stream. Streams
+  now belong to the window that started them.
+- **`tiny.store` treats every key as a plain key.** `set('__proto__', …)`
+  changed what other keys read back instead of storing a value, and
+  backend `get('constructor')` returned a built-in function rather than
+  `null`. A `store.json` holding `null` or an array now loads as empty
+  instead of making every call fail.
+- **Window titles flatten carriage returns and tabs**, as they already
+  did newlines.
+- **txiki.js downloads are checked against pinned hashes.** Cross-arch
+  and universal macOS builds bundle a txiki runtime from a cache in
+  `~/Library/Caches/tinyjs`, which any program running as you can write
+  to, and it was then signed with your identity. Builds now check it
+  against a hash shipped with tinyjs, after download and every time the
+  cache is reused, and stop if it doesn't match. `setup.sh`, `setup.ps1`
+  and the release workflow check their downloads the same way.
+- **`setup.sh` uses a private temp folder** instead of predictable
+  `/tmp` names another local user could set up in advance.
+
 ## 0.44.1 — 2026-10-02
 
 Thanks to [@slabbdev](https://github.com/slabbdev)
