@@ -2663,8 +2663,9 @@ there, 2 not ours → single instance off), and `--open` uses the same check.
   commit) also re-checked on a built app: a second launch with a path exits
   0 in 0.06 s, one launcher stays, and `onOpenFiles` gets the path with its
   space intact.
-- [ ] **Any OS, regression** — kitchen-sink's four `tiny.win.open` windows
+- [x] **Any OS, regression** — kitchen-sink's four `tiny.win.open` windows
   (calllog, ball, traypanel, inspector) and matcha's settings still open.
+  *(2026-10-02: clicked through by hand — all open.)*
   *(Read, not run: every page-side call passes a bare filename from its own
   frontend — `calllog.html`, `ball.html`, `inspector.html`, matcha's
   `settings.html` — the same shape as the macOS `sub.html` probe that
