@@ -329,6 +329,61 @@ async function linuxInstanceSock(name) {
   return dir + '/tinyjs-app-' + name + '.sock';
 }
 
+// Windows session pipe: resolve with the {readable, writable} of the first
+// connection whose opening line is `HELLO <token>`, the launcher's proof
+// (see pipeToken). Connections are vetted in parallel so one that never
+// speaks can't hold the real launcher up; a failed one is hung up after at
+// most 10 s, and nothing is ever written to it. Bytes that arrived behind
+// the HELLO line are handed on in front of the rest of the stream.
+function acceptWithToken(acceptReader, token) {
+  const want = 'HELLO ' + token;
+  let won = false;
+  return new Promise((resolve) => {
+    const vet = async (sock) => {
+      const { readable, writable } = await sock.opened;
+      const rd = readable.getReader();
+      let buf = new Uint8Array(0), nl = -1;
+      const timer = setTimeout(() => rd.cancel().catch(() => {}), 10000);
+      while (nl < 0 && buf.length <= want.length + 1) {
+        const { value, done } = await rd.read();
+        if (done) break;
+        const next = new Uint8Array(buf.length + value.length);
+        next.set(buf); next.set(value, buf.length);
+        buf = next;
+        nl = buf.indexOf(10);
+      }
+      clearTimeout(timer);
+      const line = new TextDecoder().decode(buf.subarray(0, nl < 0 ? 0 : nl));
+      if (won || nl < 0 || line.replace(/\r$/, '') !== want) {
+        rd.cancel().catch(() => {});
+        sock.close?.();
+        return;
+      }
+      won = true;
+      const rest = buf.subarray(nl + 1);
+      resolve({
+        writable,
+        readable: new ReadableStream({
+          start(c) { if (rest.length) c.enqueue(rest); },
+          async pull(c) {
+            const { value, done } = await rd.read();
+            if (done) c.close(); else c.enqueue(value);
+          },
+          cancel(r) { return rd.cancel(r); },
+        }),
+      });
+    };
+    (async () => {
+      for (;;) {
+        const { value: sock, done } = await acceptReader.read();
+        if (done) return;
+        if (won) { sock.close?.(); continue; }
+        vet(sock).catch(() => sock.close?.());
+      }
+    })().catch(() => {});
+  });
+}
+
 async function probeOk(argv) {
   try {
     await readyHiddenArgv();
@@ -1222,6 +1277,18 @@ export async function createApp({ html, htmlPath, url = null, title = 'tinyjs', 
       for (const f of flags) if (!extra.includes(f)) extra = (extra ? extra + ' ' : '') + f;
       spawnEnv.WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS = extra;
     }
+    // Windows: the session pipe's name is random but listable, and libuv's
+    // default DACL lets any user (and Anonymous) connect read-only — so the
+    // FIRST connection isn't necessarily our launcher, and whoever it is
+    // would get every line we send. The launcher proves itself with a token
+    // that only rides its env (other users can't read our processes' env);
+    // a read-only connection can never send it. Unix: the socket sits in a
+    // 0700 dir, nobody else gets that far.
+    const pipeToken = IS_WIN
+      ? Array.from(crypto.getRandomValues(new Uint8Array(32)),
+          (b) => b.toString(16).padStart(2, '0')).join('')
+      : null;
+    if (pipeToken) spawnEnv.TINYJS_PIPE_TOKEN = pipeToken;
     const spawnOpts = { stderr: 'inherit', env: spawnEnv };
     // macOS: a bare (non-bundled) binary takes its OS-facing app name — menu
     // bar, cmd-tab — from the executable's file name. In dev that reads
@@ -1245,8 +1312,10 @@ export async function createApp({ html, htmlPath, url = null, title = 'tinyjs', 
 
     // Wait for the launcher to connect, but bail out if it dies instead.
     const acceptReader = serverInfo.readable.getReader();
+    const connected = pipeToken ? acceptWithToken(acceptReader, pipeToken)
+      : acceptReader.read().then(({ value }) => value.opened);
     const first = await Promise.race([
-      acceptReader.read().then(({ value }) => ({ sock: value })),
+      connected.then((io) => ({ io })),
       proc.wait().then((st) => ({ exited: st })),
     ]);
     if (first.exited) {
@@ -1254,7 +1323,7 @@ export async function createApp({ html, htmlPath, url = null, title = 'tinyjs', 
       throw new Error('launcher exited before connecting: ' + JSON.stringify(first.exited));
     }
 
-    ({ readable, writable } = await first.sock.opened);
+    ({ readable, writable } = first.io);
   }
 
   const writer = writable.getWriter();
@@ -1264,6 +1333,39 @@ export async function createApp({ html, htmlPath, url = null, title = 'tinyjs', 
   const frontendDir = htmlPath
     ? (isUrl(htmlPath) ? htmlPath.replace(/\/+$/, '') : dirOf(htmlPath))
     : null;
+  // A PAGE's win.open page (#29.3). The "wrapper" preset hands win.* to the
+  // wrapped site, and every launcher loads file:// with file-to-file reads
+  // allowed (Windows --allow-file-access-from-files, Linux/macOS universal
+  // access) — so an absolute path, or a ../ walk out of the frontend, let a
+  // hostile page open a file it planted (a download, say) as a privileged
+  // file:// window that reads the disk. Pages get http(s) URLs and files
+  // INSIDE the frontend dir; backend app.openWindow stays unrestricted.
+  const normPath = (p) => {
+    const parts = String(p).replace(/\\/g, '/').split('/');
+    const out = [];
+    for (const seg of parts.slice(1)) {
+      if (seg === '' || seg === '.') continue;
+      if (seg === '..') out.pop(); else out.push(seg);
+    }
+    return parts[0] + '/' + out.join('/');
+  };
+  function pageForWindow(page) {
+    if (page == null) return page;
+    const p = String(page);
+    if (isUrl(p)) return p;
+    const refuse = () => {
+      throw new Error('win.open from a page takes an http(s) URL or a page inside the app\'s frontend');
+    };
+    if (p.includes('\0') || (/^[A-Za-z][\w+.-]*:/.test(p) && !/^[A-Za-z]:[\\/]/.test(p))) refuse();
+    if (!frontendDir) refuse();
+    const rooted = isAbs(p) || /^[\\/]/.test(p); // incl. \\server\share
+    if (isUrl(frontendDir)) return rooted ? refuse() : p;
+    const fold = (s) => (IS_WIN ? s.toLowerCase() : s);
+    const root = normPath(frontendDir).replace(/\/$/, '');
+    const abs = normPath(rooted ? p : frontendDir + '/' + p);
+    if (!fold(abs).startsWith(fold(root) + '/')) refuse();
+    return abs;
+  }
 
   // Read-backs: <OP> <qid> <rest> → launcher answers GOT <qid> <json>.
   let qidSeq = 1;
@@ -2528,7 +2630,8 @@ export async function createApp({ html, htmlPath, url = null, title = 'tinyjs', 
     // directly and keeps its handlers in scope.
     'macos.ai.generate': async ({ prompt, instructions }) => (macosOnly('ai.generate'), app.macos.ai.generate(prompt, { instructions })),
     'win.setPosition': async ({ x, y }, _a, m) => (forWin(m).setPosition(x, y), true),
-    'win.open': async ({ id: wid, ...opts }) => (app.openWindow(wid, opts), true),
+    'win.open': async ({ id: wid, ...opts }) =>
+      (app.openWindow(wid, { ...opts, page: pageForWindow(opts.page) }), true),
     'win.close': async ({ id: wid }, _a, m) => {
       const target = wid ?? m?.window ?? 'main';
       if (target === 'main') app.quit();
@@ -3066,15 +3169,22 @@ export async function createApp({ html, htmlPath, url = null, title = 'tinyjs', 
 
   // --- Windows/Linux: single instance + deep links / file associations -----
   // Built apps only (macOS gets all of this from LaunchServices + the plist).
-  // The app listens on \\.\pipe\tinyjs-app-<id> (Windows) or
+  // The app listens on \\.\pipe\tinyjs-app-<id>-<user> (Windows) or
   // $XDG_RUNTIME_DIR/tinyjs-app-<id>.sock (Linux); `launcher --open` (the
   // registered protocol/extension handler) forwards URLs and file paths
   // over it, starting the app first when needed. A second direct launch of
   // the exe detects the pipe, activates the running instance, and exits.
   if ((IS_WIN || IS_LINUX) && (await bundlePath())) {
+    // Windows pipe names are one machine-wide namespace, so the user is part
+    // of the name (two users on one box each get their own instance). That
+    // name is guessable, so it's no defence on its own: the launcher locks
+    // the pipe's DACL to this user once we own it, and a hand-off only goes
+    // to a pipe whose server runs as this user (#29.2, the #12 twin).
     const instPipe = IS_WIN
-      ? '\\\\.\\pipe\\tinyjs-app-' + (id || 'tinyjs-app')
+      ? '\\\\.\\pipe\\tinyjs-app-' + (id || 'tinyjs-app') + '-' +
+        String(tjs.system.userInfo.userName ?? '').replace(/[^\w.-]/g, '_')
       : await linuxInstanceSock(id || 'tinyjs-app');
+    const handoffExe = exeDir + 'launcher.exe';
     let haveInstancePipe = false;
     // Relaunched by an update: the instance that spawned us still owns the
     // pipe until it finishes quitting, and handing off to it would leave no
@@ -3093,26 +3203,47 @@ export async function createApp({ html, htmlPath, url = null, title = 'tinyjs', 
         await new Promise((r) => setTimeout(r, 50));
       }
     }
+    let squatted = false;
     if (instPipe) try {
       const conn = await tjs.connect('pipe', instPipe);
       const { writable } = await conn.opened;
-      const w = writable.getWriter();
       // Carry the argv documents over: the running instance opens them, which
       // is what `myapp notes.md` should do whether or not the app is already
       // up. The receiving end already understands `paths`.
-      await w.write(enc.encode(JSON.stringify(
-        cliPaths.length ? { activate: true, paths: cliPaths } : { activate: true }) + '\n'));
-      tjs.exit(0); // another instance owns the app — hand over
+      const msg = JSON.stringify(
+        cliPaths.length ? { activate: true, paths: cliPaths } : { activate: true });
+      if (IS_WIN) {
+        // Something answers — hang up unsent (the owner ignores an empty
+        // connection) and let the launcher deliver, since only it can ask
+        // who the server is. 0 = handed over, 2 = not this user's pipe.
+        conn.close();
+        const st = await tjs.spawn([handoffExe, '--handoff', instPipe, msg],
+          { stdin: 'ignore', stdout: 'ignore', stderr: 'ignore' }).wait();
+        if (st.exit_status === 0) tjs.exit(0);
+        if (st.exit_status === 2) squatted = true;
+      } else {
+        const w = writable.getWriter();
+        await w.write(enc.encode(msg + '\n'));
+        tjs.exit(0); // another instance owns the app — hand over
+      }
     } catch {}
+    if (squatted) {
+      console.log(`tinyjs: ${instPipe} is held by another user — single instance and URL/file handoff are off`);
+    }
     // A unix socket left by a crashed instance blocks listen() — nothing
     // answered above, so it's stale; clear it. (Windows pipes need no cleanup.)
     if (IS_LINUX && instPipe) await tjs.remove(instPipe).catch(() => {});
-    if (instPipe) try {
+    if (instPipe && !squatted) try {
       const srv = await tjs.listen('pipe', instPipe);
       const srvInfo = await srv.opened;
       // the socket comes out umask-wide; the dir around it is already 0700
       // (#12), this is belt and braces
       if (IS_LINUX) await tjs.chmod(instPipe, 0o600).catch(() => {});
+      // libuv creates the pipe with the default DACL (Everyone + Anonymous
+      // may connect read-only) and keeps no handle we can reach; the launcher
+      // re-ACLs it to this user + SYSTEM, network denied — later instances
+      // libuv creates inherit that.
+      if (IS_WIN) send('PIPELOCK ' + instPipe);
       haveInstancePipe = true;
       (async () => {
         const acceptReader = srvInfo.readable.getReader();

@@ -4,6 +4,37 @@ All notable changes to tinyjs. Versions are git tags (`vX.Y.Z`); a tag push
 builds and publishes the release. The rendered version of this file lives at
 https://tinyjs.app/changelog.
 
+## Unreleased
+
+The last two items of [#29](https://github.com/tarwin/tinyjsapp/issues/29).
+
+- **A page's `win.open` stays inside the app.** `tiny.win.open` took any
+  absolute path for `page`, and the `"wrapper"` preset hands `win.*` to the
+  wrapped site. Every launcher lets `file://` pages read other files, so a
+  hostile page could download an HTML file and then open it as a privileged
+  `file://` window that reads the disk. From a page, `page` must now be an
+  http(s) URL or a file inside the frontend directory. `../` walks, other
+  absolute paths, UNC paths and `file:`/`javascript:` URLs are refused with
+  an error. Backend `app.openWindow` is unchanged. All platforms.
+- **Windows: the single-instance pipe belongs to the user.** It was
+  `\\.\pipe\tinyjs-app-<id>`, the same name for every user on the machine,
+  with Windows' default permissions. Other users could connect to read it,
+  and a user who created the name first would receive a second launch's
+  file paths and deep links (OAuth callbacks included). The pipe is now
+  per user (`tinyjs-app-<id>-<user>`), locked to that user and SYSTEM with
+  network access denied. A second launch or a registered URL/file handler
+  hands over only to a pipe whose server runs as the same user. If another
+  user holds the name, single instance turns off, matching Linux since
+  0.42.2 (#12). URL schemes and file types re-register with the new name
+  on first launch.
+- **Windows: the app only talks to its own window process.** The private
+  pipe between an app and its window has a random name, but anyone on the
+  machine can list pipe names and connect to read. The app took the first
+  connection to arrive as its window and sent it everything, so another
+  user who connected first received the app's traffic. The window process
+  now proves itself with a one-time secret before the app sends anything,
+  and connections without it are hung up.
+
 ## 0.45.0 — 2026-10-02
 
 Security and robustness fixes. Thanks to [@slabbdev](https://github.com/slabbdev)

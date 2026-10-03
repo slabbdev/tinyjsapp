@@ -116,6 +116,9 @@ tiny.win.open('settings', { page: 'settings.html', title: 'Settings',
 // parent: stays above THAT window (not other apps, unlike setLevel), hides/
 // minimizes/closes with it; no taskbar entry on Windows; macOS also moves it
 // with the parent. Open-time only.
+// page: an http(s) URL or a file INSIDE the frontend dir — from a page,
+// anything else (../ walks, other absolute paths, file:) is refused;
+// backend app.openWindow takes any path.
 // chrome + x/y + minSize apply BEFORE first paint. win.* calls target the
 // caller's window; backend: app.openWindow(...), app.window(id).eval/push/
 // close/setTitle/…, app.push broadcasts; export onWindowClosed(id, app).

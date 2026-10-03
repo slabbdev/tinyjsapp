@@ -2568,3 +2568,62 @@ changes. Not compiled anywhere yet (no MinGW on the Mac).
   `win.open` child read `probea` too. The built exe read the value dev
   wrote (shared folder). Self-update 1.0.0 → 1.0.1 from a local manifest:
   the relaunched 1.0.1 page read `k` = `probea`.)*
+
+## #29.2 instance-pipe ACL + #29.3 page win.open confinement (2026-10-02) — Windows verified 2026-10-02
+
+**#29.3 (bridge.js, ALL platforms).** The page-facing `win.open` builtin runs
+`page` through `pageForWindow`: http(s) URLs pass; otherwise the path is
+normalized (`\` → `/`, `.`/`..` resolved) and must land inside `frontendDir`
+(case-folded on Windows only). Any other scheme, a drive-relative `C:x`,
+anything rooted (`/`, `\`, `\server`) outside the frontend, or no
+frontendDir (html-string / TINYJS_HTML / url-only wrappers) → rejects with
+"win.open from a page takes an http(s) URL or a page inside the app's
+frontend". devUrl mode: relative only. Backend `app.openWindow` untouched.
+
+**#29.2 (Windows only).** Pipe name `\.\pipe\tinyjs-app-<id>-<userName>`.
+After listen the bridge sends `PIPELOCK <name>`; the launcher opens a client
+handle with WRITE_DAC, checks the server is this user, and sets the
+protected DACL `D:P(D;;GA;;;NU)(A;;GA;;;<user>)(A;;GA;;;SY)` (libuv's
+default is SY/BA/owner full + Everyone/Anonymous read; it keeps no handle
+JS can reach). Hand-offs check the server's user SID
+(`GetNamedPipeServerProcessId` → token) before writing: the bridge's second
+instance spawns `launcher.exe --handoff <pipe> <json>` (0 sent, 1 nobody
+there, 2 not ours → single instance off), and `--open` uses the same check.
+
+- [x] **Windows, DACL** — built app running → its pipe reads
+  `D:P(D;;FA;;;NU)(A;;FA;;;<user SID>)(A;;FA;;;SY)`, server pid = the app.
+  A scratch prototype first confirmed the DACL sticks to the libuv pipe and
+  later instances still get created (accepts kept working after the lock).
+- [x] **Windows, hand-off** — second launch of the built exe exits 0 in about
+  1 s and the first stays up. `launcher.exe --open <pipe> <exe> C:\…\win.ini`
+  exits 0. `--handoff` against a bare tjs listener delivers
+  `{"activate":true,"paths":["C:\x y\ü.md"]}` byte for byte (Unicode argv
+  intact). No listener → exit 1.
+- [ ] **Windows, squatter** — needs a SECOND local account: as user B, create
+  `\.\pipe\tinyjs-app-<id>-<A's name>` with an Everyone-write DACL, then as
+  A launch the app → console says "held by another user", app runs with no
+  single instance, B's pipe receives nothing; `launcher --open` exits 2 and
+  starts nothing. Not run: the code path is fail-closed by construction but
+  has only been read, not watched.
+- [x] **Windows, win.open** — built app, page-side probes: `sub.html`,
+  `./sub.html`, absolute-inside (both slash styles) open and render;
+  `../…/Windows/win.ini`, `x/..\..\…`, `C:/Windows/win.ini`,
+  `C:\Windows\win.ini`, `file:///C:/…`, `C:Windows/…`,
+  `\localhost\C$\…`, `javascript:`, and `<frontend>-evil/sub.html`
+  (sibling with the same prefix) all reject.
+- [ ] **macOS, win.open** — same probes from a built .app (frontend lives in
+  Contents/Resources): legit pages still open; escapes reject.
+- [ ] **Linux, win.open** — same probes from a built app.
+- [ ] **Any OS, regression** — kitchen-sink's four `tiny.win.open` windows
+  (calllog, ball, traypanel, inspector) and matcha's settings still open.
+- [x] **Windows, session-pipe token** — the bridge↔launcher pipe
+  (`tinyjs-XXXXXX`) had the same default DACL, and the bridge took the FIRST
+  connection as its launcher. Now the bridge puts 32 random bytes in
+  `TINYJS_PIPE_TOKEN` (spawn env only), the launcher sends `HELLO <token>`
+  first and unsets the variable, and `acceptWithToken` vets connections in
+  parallel (10 s cap, never writes to one that fails). Adversarial check: a
+  scratch `snoop.exe` polls `\.\pipe\` and connects READ-ONLY the moment a
+  session pipe appears. **Before:** it won the race and read 499 bytes of
+  wire (`GET 1 screens`, …). **After (3 runs):** it still connects, reads 0
+  bytes and is hung up (109); the app comes up normally each time, menus and
+  backend calls work, `tinyjs dev` too, and the instance pipe is still locked.

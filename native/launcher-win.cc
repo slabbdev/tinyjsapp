@@ -49,6 +49,8 @@
 #include <ole2.h>
 #include <sapi.h>
 #include <wincrypt.h>
+#include <aclapi.h>       // instance-pipe DACL (#29.2)
+#include <sddl.h>
 #include <gdiplus.h>
 #include <mmdeviceapi.h>  // WASAPI loopback capture (tiny.audioTap)
 #include <audioclient.h>
@@ -6902,6 +6904,8 @@ static void tiny_audiotap_start(AudioTapReq req) {
 // ---------------------------------------------------------------------------
 // pipe read loop (background thread; UI work hops via webview_dispatch)
 
+static void lock_instance_pipe(const std::string &name); // PIPELOCK, below
+
 static void pipe_read_loop() {
   std::string buf;
   char chunk[4096];
@@ -7022,6 +7026,8 @@ static void pipe_read_loop() {
         // p[13] is windowControlsPos (macOS-only), p[14] parent.
         wr->parent = p.size() > 14 ? p[14] : "";
         webview_dispatch(g_w, do_winopen, wr);
+      } else if (line.rfind("PIPELOCK ", 0) == 0) {
+        lock_instance_pipe(line.substr(9)); // off the UI thread on purpose
       } else if (line.rfind("WINCLOSE ", 0) == 0) {
         webview_dispatch(g_w, do_winclose, new std::string(line.substr(9)));
       } else if (line.rfind("DLG ", 0) == 0) {
@@ -7582,6 +7588,129 @@ static void on_invoke(const char *id, const char *req, void *) {
   pipe_write_line(std::string("CALL ") + id + " " + body);
 }
 
+// --- the app's single-instance pipe (#29.2) ---------------------------------
+// The bridge listens on \\.\pipe\tinyjs-app-<id>-<user> through libuv, which
+// creates it with the default DACL (Everyone + Anonymous may connect for
+// read) and keeps the handle to itself. Pipe names are machine-wide and this
+// one is guessable, so two things make it this user's, the Windows twin of
+// Linux's 0700 socket dir (#12):
+//  - PIPELOCK: once the bridge owns the name, re-ACL it to this user + SYSTEM
+//    with network logons denied. The DACL lives on the pipe, not an instance,
+//    so the instances libuv creates for later accepts inherit it.
+//  - every hand-off (--handoff, --open) first asks who the server is and
+//    sends nothing unless it runs as this user — a name another user created
+//    first would otherwise collect our URLs (OAuth callbacks) and file paths.
+
+// A process's user SID (bytes), or empty.
+static std::vector<BYTE> token_user(HANDLE proc) {
+  std::vector<BYTE> out;
+  HANDLE tok = nullptr;
+  if (!OpenProcessToken(proc, TOKEN_QUERY, &tok))
+    return out;
+  DWORD n = 0;
+  GetTokenInformation(tok, TokenUser, nullptr, 0, &n);
+  std::vector<BYTE> buf(n);
+  if (n && GetTokenInformation(tok, TokenUser, buf.data(), n, &n)) {
+    PSID sid = reinterpret_cast<TOKEN_USER *>(buf.data())->User.Sid;
+    DWORD len = GetLengthSid(sid);
+    out.assign((BYTE *)sid, (BYTE *)sid + len);
+  }
+  CloseHandle(tok);
+  return out;
+}
+
+// Does the server end of this connected pipe run as us? Fails closed: a
+// server we can't open (another user's process, typically) is not ours.
+static bool pipe_server_is_us(HANDLE pipe) {
+  ULONG pid = 0;
+  if (!GetNamedPipeServerProcessId(pipe, &pid) || !pid)
+    return false;
+  HANDLE proc = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
+  if (!proc)
+    return false;
+  std::vector<BYTE> them = token_user(proc);
+  CloseHandle(proc);
+  std::vector<BYTE> me = token_user(GetCurrentProcess());
+  return !me.empty() && them.size() == me.size() &&
+         EqualSid((PSID)them.data(), (PSID)me.data());
+}
+
+static void lock_instance_pipe(const std::string &name) {
+  std::vector<BYTE> me = token_user(GetCurrentProcess());
+  LPWSTR sid = nullptr;
+  if (me.empty() || !ConvertSidToStringSidW((PSID)me.data(), &sid)) {
+    std::fprintf(stderr, "launcher: PIPELOCK: no user SID\n");
+    return;
+  }
+  std::wstring sddl = L"D:P(D;;GA;;;NU)(A;;GA;;;" + std::wstring(sid) +
+                      L")(A;;GA;;;SY)";
+  LocalFree(sid);
+  PSECURITY_DESCRIPTOR sd = nullptr;
+  if (!ConvertStringSecurityDescriptorToSecurityDescriptorW(
+          sddl.c_str(), SDDL_REVISION_1, &sd, nullptr)) {
+    std::fprintf(stderr, "launcher: PIPELOCK: bad SDDL\n");
+    return;
+  }
+  BOOL present = FALSE, defaulted = FALSE;
+  PACL dacl = nullptr;
+  GetSecurityDescriptorDacl(sd, &present, &dacl, &defaulted);
+  // A client handle with WRITE_DAC is enough to set the pipe's DACL; the
+  // bridge sees an empty connection and ignores it. Check it's really the
+  // bridge's pipe first — re-ACLing a squatter's would hand it nothing, but
+  // there's no reason to touch it either.
+  DWORD err = 0;
+  HANDLE h = CreateFileW(widen(name).c_str(), WRITE_DAC | READ_CONTROL, 0,
+                         nullptr, OPEN_EXISTING, 0, nullptr);
+  if (h == INVALID_HANDLE_VALUE)
+    err = GetLastError();
+  else {
+    if (!pipe_server_is_us(h))
+      err = ERROR_ACCESS_DENIED;
+    else
+      err = SetSecurityInfo(h, SE_KERNEL_OBJECT,
+                            DACL_SECURITY_INFORMATION |
+                                PROTECTED_DACL_SECURITY_INFORMATION,
+                            nullptr, nullptr, dacl, nullptr);
+    CloseHandle(h);
+  }
+  LocalFree(sd);
+  if (err)
+    std::fprintf(stderr, "launcher: PIPELOCK %s failed (%lu)\n", name.c_str(),
+                 err);
+}
+
+// Connect to the instance pipe and send `msg` (one line) only if its server
+// is this user's. 0 = delivered, 1 = nothing listening, 2 = not ours.
+static int send_to_instance(const std::string &pipe, const std::string &msg) {
+  std::wstring wpipe = widen(pipe);
+  HANDLE h = INVALID_HANDLE_VALUE;
+  for (int i = 0; i < 5; i++) { // every instance mid-accept: brief wait
+    h = CreateFileW(wpipe.c_str(), GENERIC_WRITE, 0, nullptr, OPEN_EXISTING,
+                    0, nullptr);
+    if (h != INVALID_HANDLE_VALUE || GetLastError() != ERROR_PIPE_BUSY)
+      break;
+    WaitNamedPipeW(wpipe.c_str(), 200);
+  }
+  if (h == INVALID_HANDLE_VALUE)
+    return GetLastError() == ERROR_ACCESS_DENIED ? 2 : 1;
+  int rc = 2;
+  if (pipe_server_is_us(h)) {
+    DWORD n = 0;
+    rc = WriteFile(h, msg.data(), (DWORD)msg.size(), &n, nullptr) &&
+                 n == msg.size()
+             ? 0
+             : 1;
+  }
+  CloseHandle(h);
+  return rc;
+}
+
+// `launcher-win.exe --handoff <pipe> <json>` — the bridge's second-instance
+// hand-off (txiki can't ask a pipe who its server is). Exit code as above.
+static int handoff_mode(char **argv) {
+  return send_to_instance(argv[2], std::string(argv[3]) + "\n");
+}
+
 // `launcher-win.exe --open <pipe> <app-exe> [arg]` — the registered handler
 // for URL schemes and file associations. Compiled txiki apps reject argv, so
 // deep links can't go through the app exe: this mode forwards the argument
@@ -7602,18 +7731,11 @@ static int open_mode(int argc, char **argv) {
     json = "{\"paths\":[" + json_escape(arg) + "]}";
   json += "\n";
 
-  auto try_send = [&]() -> bool {
-    HANDLE h = CreateFileW(widen(pipe).c_str(), GENERIC_WRITE, 0, nullptr,
-                           OPEN_EXISTING, 0, nullptr);
-    if (h == INVALID_HANDLE_VALUE)
-      return false;
-    DWORD n = 0;
-    WriteFile(h, json.data(), (DWORD)json.size(), &n, nullptr);
-    CloseHandle(h);
-    return true;
-  };
-  if (try_send())
-    return 0;
+  // A pipe that isn't this user's gets nothing — not the link, and not a
+  // fresh start of the app either (it would find the same squatter).
+  int rc = send_to_instance(pipe, json);
+  if (rc != 1)
+    return rc;
   // Not running: start the app (no argv — txiki compiled binaries reject
   // any), then deliver once its instance pipe is up.
   std::wstring cmd = L"\"" + widen(exe) + L"\"";
@@ -7630,8 +7752,8 @@ static int open_mode(int argc, char **argv) {
   CloseHandle(pi.hProcess);
   for (int i = 0; i < 100; i++) { // up to ~15s for a cold start
     Sleep(150);
-    if (try_send())
-      return 0;
+    if ((rc = send_to_instance(pipe, json)) != 1)
+      return rc;
   }
   return 1;
 }
@@ -7743,6 +7865,8 @@ static int run(int argc, char **argv) {
     return run_hidden();
   if (argc >= 4 && strcmp(argv[1], "--open") == 0)
     return open_mode(argc, argv);
+  if (argc == 4 && strcmp(argv[1], "--handoff") == 0)
+    return handoff_mode(argv);
   if (argc < 3) {
     std::fprintf(stderr,
                  "usage: %s <html-file-or-url> <pipe-name> [title] [WxH] "
@@ -7810,6 +7934,17 @@ static int run(int argc, char **argv) {
   if (g_pipe == INVALID_HANDLE_VALUE) {
     std::fprintf(stderr, "launcher: cannot connect to %s\n", pipe_name.c_str());
     return 1;
+  }
+  // First line: the bridge's token, proving this connection is its launcher
+  // and not some other user's read-only one (see pipeToken in bridge.js).
+  // Then drop it from our env — nothing we spawn needs it.
+  {
+    char tok[128];
+    DWORD n = GetEnvironmentVariableA("TINYJS_PIPE_TOKEN", tok, sizeof(tok));
+    if (n > 0 && n < sizeof(tok)) {
+      pipe_write_raw(std::string("HELLO ") + tok + "\n");
+      SetEnvironmentVariableA("TINYJS_PIPE_TOKEN", nullptr);
+    }
   }
 
   // tinyjs.json "debug" / "browserAccelerators" ride the spawn env (see the
